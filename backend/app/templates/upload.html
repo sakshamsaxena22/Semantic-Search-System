@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Multi-file Upload & Query</title>
+</head>
+<body>
+    <h1>Upload Documents (max 75 files)</h1>
+    <!-- Wrap input in a form (optional but safer) -->
+    <form id="uploadForm" onsubmit="return false;">
+        <input type="file" id="fileInput" name="file" multiple required />
+        <button type="button" onclick="uploadFiles()">Upload Files</button>
+    </form>
+    <div id="uploadStatus"></div>
+
+    <hr />
+
+    <h2>Ask a Question</h2>
+    <input type="text" id="queryInput" placeholder="Type your question here..." style="width: 300px;" />
+    <button onclick="sendQuery()">Submit Query</button>
+
+    <h3>Answer:</h3>
+    <p id="answerOutput"></p>
+
+    <h3>Citations:</h3>
+    <pre id="citationsOutput" style="background:#eee; padding:10px;"></pre>
+
+    <script>
+        async function uploadFiles() {
+            const fileInput = document.getElementById("fileInput");
+            const statusDiv = document.getElementById("uploadStatus");
+
+            const files = fileInput.files;
+            if (!files.length) {
+                statusDiv.textContent = "Please select at least one file.";
+                return;
+            }
+
+            if (files.length > 75) {
+                statusDiv.textContent = "You can upload a maximum of 75 files at once.";
+                return;
+            }
+
+            statusDiv.textContent = "Uploading files...";
+
+            let successFiles = [];
+            let failedFiles = [];
+
+            for (let i = 0; i < files.length; i++) {
+                const formData = new FormData();
+                formData.append("file", files[i]);
+
+                try {
+                    const response = await fetch("/upload", {  // Use relative URL for consistency
+                        method: "POST",
+                        body: formData,
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        successFiles.push(data.file);
+                    } else {
+                        failedFiles.push(files[i].name);
+                    }
+                } catch (err) {
+                    failedFiles.push(files[i].name);
+                }
+            }
+
+            statusDiv.innerHTML = `
+                <p>Upload finished.</p>
+                <p><strong>Successful uploads (${successFiles.length}):</strong> ${successFiles.join(", ") || "None"}</p>
+                <p><strong>Failed uploads (${failedFiles.length}):</strong> ${failedFiles.join(", ") || "None"}</p>
+            `;
+        }
+
+        async function sendQuery() {
+            const queryInput = document.getElementById("queryInput");
+            const answerOutput = document.getElementById("answerOutput");
+            const citationsOutput = document.getElementById("citationsOutput");
+
+            const query = queryInput.value.trim();
+            if (!query) {
+                answerOutput.textContent = "Please enter a query.";
+                return;
+            }
+
+            answerOutput.textContent = "Processing...";
+            citationsOutput.textContent = "";
+
+            try {
+                const response = await fetch("/query", {  // Use relative URL
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query }),
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    answerOutput.textContent = data.answer;
+                    citationsOutput.textContent = JSON.stringify(data.citations, null, 2);
+                } else {
+                    answerOutput.textContent = `Query failed: ${data.error || "Unknown error"}`;
+                }
+            } catch (err) {
+                answerOutput.textContent = "Query error: " + err.message;
+            }                                               
+        }
+    </script>
+</body>
+</html>
