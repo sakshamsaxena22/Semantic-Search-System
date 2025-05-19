@@ -1,0 +1,13 @@
+# Ignore environment files
+*.env
+**/.env
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore VS Code settings folder
+.vscode/
+
+# Ignore data folder if you want
+backend/data/
