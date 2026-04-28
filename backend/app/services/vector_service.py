@@ -1,83 +1,86 @@
-# import chromadb
-# from langchain_huggingface import HuggingFaceEmbeddings
-
-# class VectorStore:
-#     def __init__(self, collection_name="docs"):
-#         self.client = chromadb.Client()
-#         self.collection = self.client.get_or_create_collection(name=collection_name)
-#         self.embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
-#     def add_document(self, doc_id, chunks):
-#         for i, chunk in enumerate(chunks):
-#             self.collection.add(
-#                 documents=[chunk],
-#                 ids=[f"{doc_id}_{i}"],
-#                 embeddings=[self.embedding_model.embed_query(chunk)],
-#                 metadatas=[{"source": doc_id, "chunk": i}]
-#             )
-
-#     def query(self, user_query, top_k=5):
-#         query_embedding = self.embedding_model.embed_query(user_query)
-#         return self.collection.query(query_embeddings=[query_embedding], n_results=top_k)
-
-
 """
-Vector storage service for document embeddings
+Vector storage service using ChromaDB with sentence-transformers embeddings.
+Data is persisted to disk at backend/data/chroma_db/.
 """
 import logging
+import os
+from pathlib import Path
+
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+
+# Persist ChromaDB next to the uploaded documents
+_BASE_DIR = Path(__file__).resolve().parents[3]          # SemanticSearchSystem/
+_CHROMA_DIR = str(_BASE_DIR / "backend" / "data" / "chroma_db")
+
+_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 80 MB, CPU-friendly
+
 
 class VectorStore:
     """
-    Simple in-memory vector store for demonstration
-    In a real application, you would use a proper vector database
+    Persistent vector store backed by ChromaDB.
+    Documents are embedded with all-MiniLM-L6-v2 and stored on disk so
+    they survive server restarts.
     """
-    
-    def __init__(self):
-        self.documents = {}
-        self.chunks = {}
-        self.metadatas = {}
-        logging.info("Vector store initialized")
-        
-    def add_document(self, doc_id, chunks):
+
+    def __init__(self, collection_name: str = "docs"):
+        os.makedirs(_CHROMA_DIR, exist_ok=True)
+        self._client = chromadb.PersistentClient(
+            path=_CHROMA_DIR,
+            settings=Settings(anonymized_telemetry=False),
+        )
+        self._collection = self._client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self._embedder = SentenceTransformer(_EMBED_MODEL)
+        logging.info(
+            "ChromaDB VectorStore ready — collection '%s', persist dir: %s",
+            collection_name,
+            _CHROMA_DIR,
+        )
+
+    # ------------------------------------------------------------------
+    def add_document(self, doc_id: str, chunks: list[str]) -> None:
+        """Embed and upsert all chunks for a document."""
+        if not chunks:
+            logging.warning("add_document called with empty chunk list for '%s'", doc_id)
+            return
+
+        ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
+        embeddings = self._embedder.encode(chunks, show_progress_bar=False).tolist()
+        metadatas = [{"source": doc_id, "chunk": i} for i in range(len(chunks))]
+
+        self._collection.upsert(
+            ids=ids,
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+        logging.info("Upserted %d chunks for document '%s'", len(chunks), doc_id)
+
+    # ------------------------------------------------------------------
+    def query(self, query_text: str, top_k: int = 5) -> dict:
         """
-        Add document chunks to the vector store
-        
-        Args:
-            doc_id (str): Document identifier
-            chunks (list): List of text chunks
+        Semantic similarity search.
+        Returns a dict compatible with the original interface:
+            {"documents": [[chunk, ...]], "metadatas": [[meta, ...]]}
         """
-        self.documents[doc_id] = chunks
-        self.chunks[doc_id] = chunks
-        self.metadatas[doc_id] = [{"source": doc_id, "chunk": i} for i in range(len(chunks))]
-        logging.info(f"Added document {doc_id} with {len(chunks)} chunks")
-        
-    def query(self, query_text):
-        """
-        Query the vector store for relevant document chunks
-        
-        Args:
-            query_text (str): Query text
-            
-        Returns:
-            dict: Dictionary with document chunks and metadata
-        """
-        # This is a simplistic implementation - in a real app, you'd use embeddings and similarity search
-        results = {"documents": [], "metadatas": []}
-        
-        if not self.documents:
-            logging.warning("No documents in vector store")
-            return results
-            
-        # For demo purposes, just return all chunks from all documents
-        all_chunks = []
-        all_metadatas = []
-        
-        for doc_id in self.documents:
-            all_chunks.extend(self.chunks[doc_id])
-            all_metadatas.extend(self.metadatas[doc_id])
-            
-        results["documents"] = [all_chunks]
-        results["metadatas"] = [all_metadatas]
-        
-        logging.info(f"Query '{query_text}' returned {len(all_chunks)} chunks")
+        count = self._collection.count()
+        if count == 0:
+            logging.warning("Vector store is empty — no documents indexed yet")
+            return {"documents": [], "metadatas": []}
+
+        query_embedding = self._embedder.encode([query_text], show_progress_bar=False).tolist()
+        results = self._collection.query(
+            query_embeddings=query_embedding,
+            n_results=min(top_k, count),
+            include=["documents", "metadatas"],
+        )
+        logging.info(
+            "Query '%s' returned %d chunks",
+            query_text,
+            len(results.get("documents", [[]])[0]),
+        )
         return results

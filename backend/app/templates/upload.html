@@ -336,6 +336,8 @@
     uploadStatus.innerHTML = '';
   }
 
+  const MAX_FILE_BYTES = 32 * 1024 * 1024; // 32 MB — must match server
+
   async function uploadFiles() {
     if (!selectedFiles.length) return;
     setUploadLoading(true);
@@ -345,21 +347,40 @@
 
     let success = [], failed = [];
     for (let i = 0; i < selectedFiles.length; i++) {
+      const f = selectedFiles[i];
+
+      // ── Client-side size guard ─────────────────────────────────────
+      if (f.size > MAX_FILE_BYTES) {
+        failed.push(`${f.name} (too large — max 32 MB)`);
+        progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
+        continue;
+      }
+
       const fd = new FormData();
-      fd.append('file', selectedFiles[i]);
+      fd.append('file', f);
       try {
         const res = await fetch('/upload', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (res.ok) success.push(data.file || selectedFiles[i].name);
-        else failed.push(selectedFiles[i].name);
-      } catch { failed.push(selectedFiles[i].name); }
+
+        // Safely parse JSON — some error responses may not be JSON
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+
+        if (res.ok) {
+          success.push(data.file || f.name);
+        } else {
+          const reason = data.message || data.error || `HTTP ${res.status}`;
+          failed.push(`${f.name} (${reason})`);
+        }
+      } catch (err) {
+        failed.push(`${f.name} (network error: ${err.message})`);
+      }
       progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
     }
 
     setUploadLoading(false);
     const parts = [];
-    if (success.length) parts.push(`<span class="status-ok">✓ ${success.length} file(s) uploaded successfully.</span>`);
-    if (failed.length)  parts.push(`<span class="status-err">✗ ${failed.length} file(s) failed: ${failed.join(', ')}</span>`);
+    if (success.length) parts.push(`<span class="status-ok">✓ ${success.length} file(s) uploaded & indexed.</span>`);
+    if (failed.length)  parts.push(`<span class="status-err">✗ Failed:<br>${failed.map(f=>'&nbsp;&nbsp;• '+f).join('<br>')}</span>`);
     uploadStatus.innerHTML = parts.join('<br>');
   }
 

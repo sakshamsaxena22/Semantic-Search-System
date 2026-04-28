@@ -23,7 +23,7 @@ app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"))
 # Setup upload folder
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "backend", "data")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # Limit upload size to 16MB
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB per file
 
 # Create upload folder if not exists
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -36,6 +36,11 @@ logging.basicConfig(level=logging.INFO)
 
 # Initialize vector store
 vector_store = VectorStore()
+
+
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({"status": "error", "message": "File too large. Maximum upload size is 32 MB."}), 413
 
 @app.route("/")
 def home():

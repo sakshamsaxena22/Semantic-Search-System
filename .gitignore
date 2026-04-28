@@ -18,13 +18,14 @@ env/
 # VS Code
 .vscode/
 
-# Uploaded documents (runtime data, not source)
+# Uploaded documents + ChromaDB persist dir (runtime data, not source)
 backend/data/*
 !backend/data/.gitkeep
+# ChromaDB on-disk store
+backend/data/chroma_db/
 
 # Docker
 *.dockerignore
 
-# Local secrets / notes with credentials
-Semanticapitxt.txt
-
+# Local secrets / notes with credentials (e.g. *.txt files with keys)
+*.secret.txt
