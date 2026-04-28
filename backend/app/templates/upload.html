@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SemanticSearch – AI Document Intelligence</title>
+  <meta name="description" content="Upload documents and query them intelligently using AI-powered semantic search." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0a0d14;
+      --surface:  #111622;
+      --card:     #161d2e;
+      --border:   #1e2a42;
+      --accent:   #4f8ef7;
+      --accent2:  #7c5cfc;
+      --success:  #22c55e;
+      --danger:   #ef4444;
+      --text:     #e2e8f0;
+      --muted:    #64748b;
+      --radius:   14px;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Animated background ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -10%, rgba(79,142,247,.15) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 110%, rgba(124,92,252,.12) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap { position: relative; z-index: 1; max-width: 900px; margin: 0 auto; padding: 0 20px 80px; }
+
+    /* ── Header ── */
+    header {
+      text-align: center;
+      padding: 60px 0 48px;
+    }
+    .logo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, rgba(79,142,247,.15), rgba(124,92,252,.15));
+      border: 1px solid rgba(79,142,247,.3);
+      border-radius: 999px;
+      padding: 8px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: .04em;
+      margin-bottom: 24px;
+    }
+    .logo-badge .dot { width:7px;height:7px;border-radius:50%;background:var(--accent);animation:pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 800;
+      line-height: 1.15;
+      background: linear-gradient(135deg, #e2e8f0 30%, #7c5cfc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 14px;
+    }
+    .subtitle { color: var(--muted); font-size: 1.05rem; font-weight: 400; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      margin-bottom: 20px;
+      transition: border-color .2s;
+    }
+    .card:hover { border-color: rgba(79,142,247,.35); }
+
+    .card-title {
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: .1em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-title .icon {
+      width: 26px; height: 26px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px;
+    }
+
+    /* ── Drop zone ── */
+    #dropZone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all .25s;
+      background: rgba(255,255,255,.02);
+    }
+    #dropZone.dragover {
+      border-color: var(--accent);
+      background: rgba(79,142,247,.07);
+    }
+    #dropZone .dz-icon { font-size: 2.4rem; margin-bottom: 10px; }
+    #dropZone p { color: var(--muted); font-size: .92rem; }
+    #dropZone strong { color: var(--text); }
+    #fileInput { display: none; }
+
+    /* ── File list ── */
+    #fileList { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+    .file-chip {
+      background: rgba(79,142,247,.12);
+      border: 1px solid rgba(79,142,247,.25);
+      border-radius: 999px;
+      padding: 4px 14px;
+      font-size: .8rem;
+      color: var(--accent);
+      display: flex; align-items: center; gap: 6px;
+      animation: fadeIn .2s ease;
+    }
+    @keyframes fadeIn { from{opacity:0;transform:scale(.92)} to{opacity:1;transform:scale(1)} }
+
+    /* ── Upload button ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 26px;
+      border-radius: 10px;
+      border: none;
+      font-family: inherit;
+      font-size: .92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .2s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(79,142,247,.3);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(79,142,247,.45); }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+    .upload-row { margin-top: 18px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+    /* ── Progress bar ── */
+    .progress-bar-wrap { flex: 1; min-width: 180px; height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; display: none; }
+    .progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 99px; transition: width .3s; }
+
+    /* ── Status message ── */
+    #uploadStatus { margin-top: 14px; font-size: .87rem; }
+    .status-ok  { color: var(--success); }
+    .status-err { color: var(--danger); }
+
+    /* ── Query section ── */
+    .query-row { display: flex; gap: 10px; }
+    #queryInput {
+      flex: 1;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 13px 18px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: .95rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    #queryInput:focus { border-color: var(--accent); }
+    #queryInput::placeholder { color: var(--muted); }
+
+    /* ── Answer box ── */
+    #answerBox {
+      display: none;
+      margin-top: 20px;
+      background: rgba(79,142,247,.06);
+      border: 1px solid rgba(79,142,247,.2);
+      border-radius: 10px;
+      padding: 20px 24px;
+      animation: fadeIn .3s ease;
+    }
+    #answerText { line-height: 1.75; color: var(--text); white-space: pre-wrap; }
+    .citations-title { margin-top: 16px; font-size: .75rem; font-weight: 700; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; }
+    #citationsOutput {
+      margin-top: 8px;
+      font-size: .8rem;
+      color: var(--muted);
+      background: rgba(255,255,255,.03);
+      border-radius: 8px;
+      padding: 10px 14px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+    }
+
+    /* ── Spinner ── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── API key notice ── */
+    .notice {
+      background: rgba(239,68,68,.08);
+      border: 1px solid rgba(239,68,68,.25);
+      border-radius: 10px;
+      padding: 14px 18px;
+      font-size: .85rem;
+      color: #fca5a5;
+      margin-bottom: 20px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo-badge"><span class="dot"></span> AI-Powered · Semantic Search</div>
+    <h1>Document Intelligence<br>at Your Fingertips</h1>
+    <p class="subtitle">Upload any document, then ask questions — get instant AI answers.</p>
+  </header>
+
+  <div id="apiNotice" class="notice">
+    ⚠️ No Groq API key detected. Add your key to the <code>.env</code> file to enable AI responses.
+  </div>
+
+  <!-- Upload card -->
+  <div class="card">
+    <div class="card-title"><span class="icon">📁</span> Upload Documents</div>
+
+    <div id="dropZone">
+      <div class="dz-icon">☁️</div>
+      <p><strong>Drag &amp; drop files here</strong> or click to browse</p>
+      <p style="margin-top:6px;font-size:.8rem;">PDF · DOCX · TXT · JPG · PNG (up to 75 files, 16 MB each)</p>
+    </div>
+    <input type="file" id="fileInput" multiple />
+
+    <div id="fileList"></div>
+
+    <div class="upload-row">
+      <button class="btn btn-primary" id="uploadBtn" onclick="uploadFiles()" disabled>
+        <span id="uploadSpinner" class="spinner"></span>
+        <span id="uploadBtnText">Upload Files</span>
+      </button>
+      <div class="progress-bar-wrap" id="progressWrap">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+    </div>
+
+    <div id="uploadStatus"></div>
+  </div>
+
+  <!-- Query card -->
+  <div class="card">
+    <div class="card-title"><span class="icon">🔍</span> Ask a Question</div>
+    <div class="query-row">
+      <input type="text" id="queryInput" placeholder="e.g. What are the key findings in the report?" onkeydown="if(event.key==='Enter')sendQuery()" />
+      <button class="btn btn-primary" id="queryBtn" onclick="sendQuery()">
+        <span id="querySpinner" class="spinner"></span>
+        <span id="queryBtnText">Search</span>
+      </button>
+    </div>
+
+    <div id="answerBox">
+      <p id="answerText"></p>
+      <div class="citations-title">Sources</div>
+      <pre id="citationsOutput"></pre>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const dropZone   = document.getElementById('dropZone');
+  const fileInput  = document.getElementById('fileInput');
+  const fileList   = document.getElementById('fileList');
+  const uploadBtn  = document.getElementById('uploadBtn');
+  const uploadStatus = document.getElementById('uploadStatus');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressBar  = document.getElementById('progressBar');
+  const answerBox  = document.getElementById('answerBox');
+
+  let selectedFiles = [];
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    handleFiles([...e.dataTransfer.files]);
+  });
+  fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
+
+  function handleFiles(files) {
+    selectedFiles = files.slice(0, 75);
+    fileList.innerHTML = '';
+    selectedFiles.forEach(f => {
+      const chip = document.createElement('div');
+      chip.className = 'file-chip';
+      chip.textContent = f.name;
+      fileList.appendChild(chip);
+    });
+    uploadBtn.disabled = selectedFiles.length === 0;
+    uploadStatus.innerHTML = '';
+  }
+
+  async function uploadFiles() {
+    if (!selectedFiles.length) return;
+    setUploadLoading(true);
+    progressWrap.style.display = 'block';
+    progressBar.style.width = '0%';
+    uploadStatus.innerHTML = '';
+
+    let success = [], failed = [];
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const fd = new FormData();
+      fd.append('file', selectedFiles[i]);
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (res.ok) success.push(data.file || selectedFiles[i].name);
+        else failed.push(selectedFiles[i].name);
+      } catch { failed.push(selectedFiles[i].name); }
+      progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
+    }
+
+    setUploadLoading(false);
+    const parts = [];
+    if (success.length) parts.push(`<span class="status-ok">✓ ${success.length} file(s) uploaded successfully.</span>`);
+    if (failed.length)  parts.push(`<span class="status-err">✗ ${failed.length} file(s) failed: ${failed.join(', ')}</span>`);
+    uploadStatus.innerHTML = parts.join('<br>');
+  }
+
+  function setUploadLoading(on) {
+    document.getElementById('uploadSpinner').style.display = on ? 'block' : 'none';
+    document.getElementById('uploadBtnText').textContent = on ? 'Uploading…' : 'Upload Files';
+    uploadBtn.disabled = on;
+  }
+
+  async function sendQuery() {
+    const query = document.getElementById('queryInput').value.trim();
+    if (!query) return;
+    setQueryLoading(true);
+    answerBox.style.display = 'none';
+
+    try {
+      const res = await fetch('/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      const data = await res.json();
+      answerBox.style.display = 'block';
+      if (res.ok) {
+        document.getElementById('answerText').textContent = data.answer;
+        document.getElementById('citationsOutput').textContent = JSON.stringify(data.citations, null, 2);
+      } else {
+        document.getElementById('answerText').textContent = '⚠️ ' + (data.message || data.error || 'Unknown error');
+        document.getElementById('citationsOutput').textContent = '';
+      }
+    } catch(err) {
+      answerBox.style.display = 'block';
+      document.getElementById('answerText').textContent = 'Network error: ' + err.message;
+    }
+    setQueryLoading(false);
+  }
+
+  function setQueryLoading(on) {
+    document.getElementById('querySpinner').style.display = on ? 'block' : 'none';
+    document.getElementById('queryBtnText').textContent = on ? 'Searching…' : 'Search';
+    document.getElementById('queryBtn').disabled = on;
+  }
+</script>
+</body>
+</html>

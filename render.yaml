@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: semantic-search-system
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # Set this manually in the Render dashboard
+      - key: FLASK_ENV
+        value: production
+    healthCheckPath: /
+    autoDeploy: true

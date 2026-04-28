@@ -1,0 +1,30 @@
+# Environment files — never commit secrets
+.env
+**/.env
+*.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# VS Code
+.vscode/
+
+# Uploaded documents (runtime data, not source)
+backend/data/*
+!backend/data/.gitkeep
+
+# Docker
+*.dockerignore
+
+# Local secrets / notes with credentials
+Semanticapitxt.txt
+
