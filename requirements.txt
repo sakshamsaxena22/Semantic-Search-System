@@ -14,6 +14,10 @@ Pillow==11.2.1
 python-docx==1.2.0
 pdf2image==1.17.0
 
+# ── OCR engine (pure-Python, no Tesseract binary required) ─────────────
+easyocr
+numpy>=1.17
+
 # ── Semantic vector store ──────────────────────────────────────────────
 chromadb==1.0.9
 sentence-transformers==3.4.1

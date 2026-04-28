@@ -349,31 +349,42 @@
     for (let i = 0; i < selectedFiles.length; i++) {
       const f = selectedFiles[i];
 
-      // ── Client-side size guard ─────────────────────────────────────
+      // Client-side size guard
       if (f.size > MAX_FILE_BYTES) {
         failed.push(`${f.name} (too large — max 32 MB)`);
         progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
         continue;
       }
 
+      uploadStatus.innerHTML = `<span style="color:var(--muted)">⏳ Uploading ${f.name}…</span>`;
       const fd = new FormData();
       fd.append('file', f);
+
       try {
         const res = await fetch('/upload', { method: 'POST', body: fd });
-
-        // Safely parse JSON — some error responses may not be JSON
         let data = {};
         try { data = await res.json(); } catch (_) {}
 
-        if (res.ok) {
-          success.push(data.file || f.name);
+        if (!res.ok) {
+          failed.push(`${f.name} (${data.message || 'HTTP ' + res.status})`);
+          progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
+          continue;
+        }
+
+        // Server accepted file — poll for OCR/indexing completion
+        const jobId = data.job_id;
+        uploadStatus.innerHTML = `<span style="color:var(--muted)">🔍 Extracting text from <b>${f.name}</b>… (may take 1–2 min for image PDFs)</span>`;
+        const result = await pollJob(jobId);
+
+        if (result.status === 'done') {
+          success.push(f.name);
         } else {
-          const reason = data.message || data.error || `HTTP ${res.status}`;
-          failed.push(`${f.name} (${reason})`);
+          failed.push(`${f.name} (${result.message || 'processing failed'})`);
         }
       } catch (err) {
         failed.push(`${f.name} (network error: ${err.message})`);
       }
+
       progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
     }
 
@@ -384,9 +395,22 @@
     uploadStatus.innerHTML = parts.join('<br>');
   }
 
+  async function pollJob(jobId, intervalMs = 2000, maxWaitMs = 300000) {
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, intervalMs));
+      try {
+        const res  = await fetch(`/status/${jobId}`);
+        const data = await res.json();
+        if (data.status === 'done' || data.status === 'error') return data;
+      } catch (_) { /* ignore transient network hiccup, keep polling */ }
+    }
+    return { status: 'error', message: 'Timed out waiting for processing' };
+  }
+
   function setUploadLoading(on) {
     document.getElementById('uploadSpinner').style.display = on ? 'block' : 'none';
-    document.getElementById('uploadBtnText').textContent = on ? 'Uploading…' : 'Upload Files';
+    document.getElementById('uploadBtnText').textContent = on ? 'Processing…' : 'Upload Files';
     uploadBtn.disabled = on;
   }
 

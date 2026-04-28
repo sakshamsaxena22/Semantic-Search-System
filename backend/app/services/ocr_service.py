@@ -1,104 +1,107 @@
 """
 OCR / text-extraction service.
 
-Handles:
-  - PDF  : native text first; falls back to Tesseract OCR per page when
-            a page has no selectable text (i.e. it is image-based / scanned).
-  - DOCX : paragraph text extraction via python-docx.
-  - TXT  : plain read.
-  - Images (JPG/PNG/BMP/TIFF) : Tesseract OCR directly.
+Extraction strategy per file type
+──────────────────────────────────
+PDF   : Two-pass per page —
+          1. PyMuPDF get_text()  → fast, perfect for text-layer PDFs
+          2. If page has < 20 native chars (image-based / scanned),
+             render page to image → EasyOCR (pure-Python, no binary needed)
+DOCX  : python-docx paragraph extraction
+TXT   : plain read
+Images: EasyOCR directly (JPG / PNG / BMP / TIFF)
 
-Tesseract must be installed on the host:
-  Windows → https://github.com/UB-Mannheim/tesseract/wiki
-  Linux   → apt-get install tesseract-ocr
-  macOS   → brew install tesseract
+EasyOCR is lazily initialised on first use so cold-start only happens
+when an image-based document is actually processed.
 """
 
 import io
 import logging
 import os
 
-import fitz  # PyMuPDF
-import pytesseract
+import fitz          # PyMuPDF
+import numpy as np
 from docx import Document
 from PIL import Image
 
-# ── Tesseract binary path (Windows) ───────────────────────────────────────────
-# pytesseract looks for `tesseract` on PATH by default.
-# On Windows the installer places it here; set explicitly so it always works.
-_WIN_TESSERACT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-if os.name == "nt" and os.path.isfile(_WIN_TESSERACT):
-    pytesseract.pytesseract.tesseract_cmd = _WIN_TESSERACT
+# ── Lazy EasyOCR reader (initialised once, reused) ────────────────────────────
+_easyocr_reader = None
 
-# DPI used when rendering a PDF page to an image for OCR.
-# 200 dpi is fast; raise to 300 for better accuracy on small text.
+
+def _get_reader():
+    """Return a cached EasyOCR Reader instance (English)."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        logging.info("Initialising EasyOCR reader (first use — may take a few seconds)…")
+        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        logging.info("EasyOCR reader ready.")
+    return _easyocr_reader
+
+
+# Resolution used when rasterising a PDF page for OCR (higher = better accuracy)
 _OCR_DPI = 200
-_MIN_TEXT_CHARS = 20   # pages with fewer chars are treated as image-only
+_MIN_TEXT_CHARS = 20     # pages below this threshold are treated as image-only
 
 
-def _ocr_pdf_page(page: fitz.Page) -> str:
-    """Render a single PDF page to a PIL image and run Tesseract on it."""
-    mat = fitz.Matrix(_OCR_DPI / 72, _OCR_DPI / 72)   # 72 pt = 1 inch
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _ocr_image(pil_img: Image.Image) -> str:
+    """Run EasyOCR on a PIL image and return joined text."""
+    reader = _get_reader()
+    arr = np.array(pil_img.convert("RGB"))
+    results = reader.readtext(arr, detail=0, paragraph=True)
+    return "\n".join(results)
+
+
+def _render_page_to_pil(page: fitz.Page, dpi: int = _OCR_DPI) -> Image.Image:
+    """Render a PDF page to a PIL Image at the given DPI."""
+    zoom = dpi / 72          # 72 pt = 1 inch baseline
+    mat = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-    img = Image.open(io.BytesIO(pix.tobytes("png")))
-    return pytesseract.image_to_string(img)
+    return Image.open(io.BytesIO(pix.tobytes("png")))
 
 
-def _tesseract_available() -> bool:
-    try:
-        pytesseract.get_tesseract_version()
-        return True
-    except Exception:
-        return False
-
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_text_from_file(file_path: str) -> str:
     ext = os.path.splitext(file_path)[1].lower()
 
     # ── PDF ───────────────────────────────────────────────────────────────────
     if ext == ".pdf":
-        tess_ok = _tesseract_available()
-        if not tess_ok:
-            logging.warning(
-                "Tesseract not found — OCR fallback disabled. "
-                "Install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki"
-            )
-
-        full_text = []
+        pages_text = []
         doc = fitz.open(file_path)
+
         for page_num, page in enumerate(doc, start=1):
             native = page.get_text().strip()          # type: ignore[attr-defined]
 
             if len(native) >= _MIN_TEXT_CHARS:
-                # Page has real selectable text — use it directly
-                full_text.append(native)
+                # Real text layer — use directly, fast path
+                pages_text.append(native)
                 logging.debug("Page %d: native text (%d chars)", page_num, len(native))
-            elif tess_ok:
-                # Page is image-based — render + OCR
-                ocr_text = _ocr_pdf_page(page).strip()
-                full_text.append(ocr_text)
-                logging.info(
-                    "Page %d: no native text, OCR extracted %d chars",
-                    page_num, len(ocr_text),
-                )
             else:
-                logging.warning(
-                    "Page %d: no native text and Tesseract unavailable — skipped",
-                    page_num,
+                # Image-based page → rasterise → EasyOCR
+                logging.info("Page %d: no native text — running EasyOCR…", page_num)
+                pil_img = _render_page_to_pil(page)
+                ocr_text = _ocr_image(pil_img).strip()
+                pages_text.append(ocr_text)
+                logging.info(
+                    "Page %d: EasyOCR extracted %d chars", page_num, len(ocr_text)
                 )
 
         doc.close()
-        return "\n\n".join(full_text)
+        combined = "\n\n".join(t for t in pages_text if t)
+        return combined
 
-    # ── Standalone images ─────────────────────────────────────────────────────
+    # ── Standalone image files ────────────────────────────────────────────────
     elif ext in (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".heic"):
         img = Image.open(file_path)
-        return pytesseract.image_to_string(img)
+        return _ocr_image(img)
 
     # ── DOCX ──────────────────────────────────────────────────────────────────
     elif ext == ".docx":
         doc = Document(file_path)
-        return "\n".join(para.text for para in doc.paragraphs if para.text.strip())
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
     # ── Plain text ────────────────────────────────────────────────────────────
     elif ext == ".txt":
