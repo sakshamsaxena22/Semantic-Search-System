@@ -6,18 +6,19 @@ Extraction strategy per file type
 PDF   : Two-pass per page —
           1. PyMuPDF get_text()  → fast, perfect for text-layer PDFs
           2. If page has < 20 native chars (image-based / scanned),
-             render page to image → EasyOCR (pure-Python, no binary needed)
+             render page to image → EasyOCR.
+        Image-only pages are processed IN PARALLEL for speed.
 DOCX  : python-docx paragraph extraction
 TXT   : plain read
 Images: EasyOCR directly (JPG / PNG / BMP / TIFF)
 
-EasyOCR is lazily initialised on first use so cold-start only happens
-when an image-based document is actually processed.
+EasyOCR is lazily initialised on first use.
 """
 
 import io
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fitz          # PyMuPDF
 import numpy as np
@@ -29,19 +30,19 @@ _easyocr_reader = None
 
 
 def _get_reader():
-    """Return a cached EasyOCR Reader instance (English)."""
     global _easyocr_reader
     if _easyocr_reader is None:
         import easyocr
-        logging.info("Initialising EasyOCR reader (first use — may take a few seconds)…")
+        logging.info("Initialising EasyOCR reader…")
         _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
         logging.info("EasyOCR reader ready.")
     return _easyocr_reader
 
 
-# Resolution used when rasterising a PDF page for OCR (higher = better accuracy)
-_OCR_DPI = 200
-_MIN_TEXT_CHARS = 20     # pages below this threshold are treated as image-only
+# ── Tuning knobs ──────────────────────────────────────────────────────────────
+_OCR_DPI       = 150    # lower = faster render; raise to 200 for tiny text
+_MIN_TEXT_CHARS = 20    # pages below this are treated as image-only
+_MAX_WORKERS   = 4      # parallel OCR threads for multi-page image PDFs
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -54,12 +55,15 @@ def _ocr_image(pil_img: Image.Image) -> str:
     return "\n".join(results)
 
 
-def _render_page_to_pil(page: fitz.Page, dpi: int = _OCR_DPI) -> Image.Image:
-    """Render a PDF page to a PIL Image at the given DPI."""
-    zoom = dpi / 72          # 72 pt = 1 inch baseline
-    mat = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-    return Image.open(io.BytesIO(pix.tobytes("png")))
+def _render_and_ocr_page(page: fitz.Page, page_num: int) -> tuple[int, str]:
+    """Render a single PDF page and OCR it. Returns (page_num, text)."""
+    zoom = _OCR_DPI / 72
+    mat  = fitz.Matrix(zoom, zoom)
+    pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+    img  = Image.open(io.BytesIO(pix.tobytes("png")))
+    text = _ocr_image(img).strip()
+    logging.info("Page %d: EasyOCR extracted %d chars", page_num, len(text))
+    return page_num, text
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -69,34 +73,48 @@ def extract_text_from_file(file_path: str) -> str:
 
     # ── PDF ───────────────────────────────────────────────────────────────────
     if ext == ".pdf":
-        pages_text = []
         doc = fitz.open(file_path)
+        native_texts: dict[int, str] = {}
+        ocr_needed: list[tuple[int, fitz.Page]] = []
 
+        # Pass 1 — collect native text; identify image-only pages
         for page_num, page in enumerate(doc, start=1):
             native = page.get_text().strip()          # type: ignore[attr-defined]
-
             if len(native) >= _MIN_TEXT_CHARS:
-                # Real text layer — use directly, fast path
-                pages_text.append(native)
+                native_texts[page_num] = native
                 logging.debug("Page %d: native text (%d chars)", page_num, len(native))
             else:
-                # Image-based page → rasterise → EasyOCR
-                logging.info("Page %d: no native text — running EasyOCR…", page_num)
-                pil_img = _render_page_to_pil(page)
-                ocr_text = _ocr_image(pil_img).strip()
-                pages_text.append(ocr_text)
-                logging.info(
-                    "Page %d: EasyOCR extracted %d chars", page_num, len(ocr_text)
-                )
+                ocr_needed.append((page_num, page))
+                logging.info("Page %d: no native text → queued for OCR", page_num)
+
+        # Pass 2 — OCR image pages in parallel
+        ocr_results: dict[int, str] = {}
+        if ocr_needed:
+            logging.info("Running EasyOCR on %d page(s) in parallel…", len(ocr_needed))
+            with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(ocr_needed))) as pool:
+                futures = {
+                    pool.submit(_render_and_ocr_page, page, pnum): pnum
+                    for pnum, page in ocr_needed
+                }
+                for future in as_completed(futures):
+                    pnum, text = future.result()
+                    ocr_results[pnum] = text
 
         doc.close()
-        combined = "\n\n".join(t for t in pages_text if t)
-        return combined
+
+        # Merge in original page order
+        total_pages = len(native_texts) + len(ocr_results)
+        all_texts = []
+        for i in range(1, total_pages + 1):
+            t = native_texts.get(i) or ocr_results.get(i, "")
+            if t:
+                all_texts.append(t)
+
+        return "\n\n".join(all_texts)
 
     # ── Standalone image files ────────────────────────────────────────────────
     elif ext in (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".heic"):
-        img = Image.open(file_path)
-        return _ocr_image(img)
+        return _ocr_image(Image.open(file_path))
 
     # ── DOCX ──────────────────────────────────────────────────────────────────
     elif ext == ".docx":
