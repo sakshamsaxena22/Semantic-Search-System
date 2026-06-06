@@ -375,32 +375,36 @@
     const dashboard = document.getElementById('jobDashboard');
     dashboard.innerHTML = '';
 
-    // Phase 1: Upload all files rapidly, collect job IDs
+    // Phase 1: Upload files in concurrent batches of 10
     const jobs = [];  // [{jobId, filename, status, message}]
     let uploadedCount = 0;
+    const BATCH_SIZE = 10;
 
-    for (const f of selectedFiles) {
-      if (f.size > MAX_FILE_BYTES) {
-        jobs.push({jobId: null, filename: f.name, status: 'error', message: 'Too large (max 32 MB)'});
-        renderDashboard(dashboard, jobs);
-        continue;
-      }
-      uploadStatus.innerHTML = `<span style="color:var(--muted)">⏳ Sending ${f.name}…</span>`;
-      const fd = new FormData();
-      fd.append('file', f);
-      try {
-        const res = await fetch(getBackendUrl('/upload'), {method: 'POST', body: fd});
-        const data = await res.json();
-        if (res.ok && data.job_id) {
-          jobs.push({jobId: data.job_id, filename: f.name, status: 'processing', message: 'Queued'});
-        } else {
-          jobs.push({jobId: null, filename: f.name, status: 'error', message: data.message || 'Upload failed'});
+    for (let i = 0; i < selectedFiles.length; i += BATCH_SIZE) {
+      const batch = selectedFiles.slice(i, i + BATCH_SIZE);
+      uploadStatus.innerHTML = `<span style="color:var(--muted)">⏳ Sending batch ${Math.floor(i/BATCH_SIZE) + 1}…</span>`;
+      
+      await Promise.all(batch.map(async (f) => {
+        if (f.size > MAX_FILE_BYTES) {
+          jobs.push({jobId: null, filename: f.name, status: 'error', message: 'Too large (max 32 MB)'});
+          return;
         }
-      } catch (err) {
-        jobs.push({jobId: null, filename: f.name, status: 'error', message: 'Network error'});
-      }
-      uploadedCount++;
-      progressBar.style.width = `${Math.round((uploadedCount / selectedFiles.length) * 100)}%`;
+        const fd = new FormData();
+        fd.append('file', f);
+        try {
+          const res = await fetch(getBackendUrl('/upload'), {method: 'POST', body: fd});
+          const data = await res.json();
+          if (res.ok && data.job_id) {
+            jobs.push({jobId: data.job_id, filename: f.name, status: 'processing', message: 'Queued'});
+          } else {
+            jobs.push({jobId: null, filename: f.name, status: 'error', message: data.message || 'Upload failed'});
+          }
+        } catch (err) {
+          jobs.push({jobId: null, filename: f.name, status: 'error', message: 'Network error'});
+        }
+        uploadedCount++;
+        progressBar.style.width = `${Math.round((uploadedCount / selectedFiles.length) * 100)}%`;
+      }));
       renderDashboard(dashboard, jobs);
     }
 

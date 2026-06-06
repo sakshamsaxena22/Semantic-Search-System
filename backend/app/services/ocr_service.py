@@ -115,17 +115,32 @@ def extract_text_from_file(file_path: str) -> str:
 
     # ── DOCX ──────────────────────────────────────────────────────────────────
     elif ext == ".docx":
-        doc = Document(file_path)
-        texts = []
-        for p in doc.paragraphs:
-            if p.text.strip():
-                texts.append(p.text.strip())
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    if cell.text.strip() and cell.text.strip() not in texts:
-                        texts.append(cell.text.strip())
-        return "\n".join(texts)
+        import zipfile
+        import xml.etree.ElementTree as ET
+        try:
+            paragraphs = []
+            with zipfile.ZipFile(file_path) as docx:
+                for item in docx.namelist():
+                    # Parse all XML files in the word/ folder (catches main doc, headers, footers, textboxes)
+                    if item.startswith('word/') and item.endswith('.xml'):
+                        xml_content = docx.read(item)
+                        tree = ET.fromstring(xml_content)
+                        for p_node in tree.iter():
+                            if p_node.tag.endswith('}p'):  # Find paragraph nodes
+                                p_text = []
+                                for t_node in p_node.iter():
+                                    if t_node.tag.endswith('}t') and t_node.text:
+                                        p_text.append(t_node.text)
+                                joined = "".join(p_text).strip()
+                                if joined:
+                                    paragraphs.append(joined)
+            final_text = "\n\n".join(paragraphs)
+            if not final_text.strip():
+                return "EXTRACTION_EMPTY"
+            return final_text
+        except Exception as e:
+            logging.error("Failed to parse DOCX via XML %s: %s", file_path, e)
+            return "EXTRACTION_EMPTY"
 
     # ── Plain text ────────────────────────────────────────────────────────────
     elif ext == ".txt":
