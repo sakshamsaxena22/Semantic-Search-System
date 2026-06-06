@@ -15,11 +15,13 @@ This document provides a complete summary of all bugs fixed, optimizations appli
 5. [Memory Optimization (OOM Prevention)](#5-memory-optimization-oom-prevention)
 6. [Vector Database — Pinecone Integration](#6-vector-database--pinecone-integration)
 7. [OCR Service — Cross-Platform Tesseract Fix](#7-ocr-service--cross-platform-tesseract-fix)
-8. [LLM API Client Improvements](#8-llm-api-client-improvements)
-9. [Frontend — Decoupled Interface](#9-frontend--decoupled-interface)
-10. [Documentation Created](#10-documentation-created)
-11. [Deployment Architecture](#11-deployment-architecture)
-12. [Commit History](#12-commit-history)
+8. [Bulk Upload Pipeline (75+ Files)](#8-bulk-upload-pipeline-75-files)
+9. [Pinecone Index Configuration](#9-pinecone-index-configuration)
+10. [LLM API Client Improvements](#10-llm-api-client-improvements)
+11. [Frontend — Decoupled Interface](#11-frontend--decoupled-interface)
+12. [Documentation Created](#12-documentation-created)
+13. [Deployment Architecture](#13-deployment-architecture)
+14. [Commit History](#14-commit-history)
 
 ---
 
@@ -189,7 +191,57 @@ elif os.path.isfile(_TESSERACT_DEFAULT_LINUX):
 
 ---
 
-## 8. LLM API Client Improvements
+## 8. Bulk Upload Pipeline (75+ Files)
+
+The original server spawned a **new thread per uploaded file**. With 75+ files, this caused:
+- Dozens of threads running simultaneously, each loading chunks into memory
+- RAM spikes causing OOM-kills on Render
+- In-memory job tracking (`_jobs` dict) lost on worker restart → "Unknown job ID" errors
+
+### Three fixes implemented:
+
+| Fix | File | Description |
+|-----|------|-------------|
+| **Sequential Job Queue** | `main.py` | Replaced per-file `threading.Thread` with a `queue.Queue` + single daemon worker thread. Files are processed **one at a time**, keeping RAM stable at ~350 MB. |
+| **Persistent Job Store** | `main.py` | Job status is now written to `.jobs.json` on disk (inside `backend/data/`). If the worker restarts mid-batch, the frontend can still poll all previously completed jobs. Auto-prunes to last 200 jobs. |
+| **Batched Encoding** | `vector_service.py` | Instead of `embedder.encode(all_chunks)` in one call, chunks are encoded in **batches of 32**. Pinecone upserts are batched in **groups of 100**. This caps peak memory per document. |
+| **GC between files** | `main.py` | `gc.collect()` runs after each file finishes, freeing temporary numpy arrays and text buffers before the next file starts. |
+
+### Upload flow for 75 files:
+```
+Frontend uploads 75 files sequentially (await per file)
+  → Server accepts each instantly (HTTP 202)
+  → Job ID saved to .jobs.json on disk
+  → File enqueued in queue.Queue
+
+Background worker thread:
+  → Dequeue file 1 → extract → embed (32 at a time) → upsert → gc.collect()
+  → Dequeue file 2 → extract → embed (32 at a time) → upsert → gc.collect()
+  → ... (stable ~350 MB RAM throughout)
+
+Frontend polls /status/<job_id>:
+  → Always gets an answer (jobs persisted to disk)
+  → No more "Unknown job ID" on worker restart
+```
+
+---
+
+## 9. Pinecone Index Configuration
+
+The Pinecone index **must** be configured with the correct dimensions matching the embedding model output. Mismatched dimensions cause `400` errors on every upsert.
+
+| Setting | Required Value | Reason |
+|---------|---------------|--------|
+| **Index Name** | `semantic-search-index` | Must match `PINECONE_INDEX_NAME` env var |
+| **Dimensions** | **`384`** | Output size of `all-MiniLM-L6-v2` model |
+| **Metric** | `cosine` | Best for semantic text similarity |
+| **Type** | `Serverless` | Free tier compatible, auto-scales |
+
+> **Common mistake:** Creating the index with 1024 or 768 dimensions (common defaults for larger models). This system uses the lightweight `all-MiniLM-L6-v2` model which outputs exactly **384** dimensions.
+
+---
+
+## 10. LLM API Client Improvements
 
 Changes made to `backend/app/services/groq_client.py`:
 
@@ -199,7 +251,7 @@ Changes made to `backend/app/services/groq_client.py`:
 
 ---
 
-## 9. Frontend — Decoupled Interface
+## 11. Frontend — Decoupled Interface
 
 ### Design
 Created `frontend/index.html` as a premium, single-page web interface with:
@@ -219,7 +271,7 @@ When deployed on Render, the frontend is served by Flask at the `/` route, so `B
 
 ---
 
-## 10. Documentation Created
+## 12. Documentation Created
 
 | File | Purpose |
 |------|---------|
@@ -229,7 +281,7 @@ When deployed on Render, the frontend is served by Flask at the `/` route, so `B
 
 ---
 
-## 11. Deployment Architecture
+## 13. Deployment Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -265,10 +317,12 @@ When deployed on Render, the frontend is served by Flask at the `/` route, so `B
 
 ---
 
-## 12. Commit History
+## 14. Commit History
 
 | Commit | Description |
 |--------|-------------|
+| `2d52571` | feat: Sequential job queue + persistent job store + batched encoding for 75+ file uploads |
+| `78959a5` | docs: Update summary.md with complete project changelog and deployment architecture |
 | `8e4cb09` | fix: Rename `pinecone-client` to `pinecone` (package renamed, old name crashes on import) |
 | `7651b86` | fix: Lazy-load all heavy ML models to prevent OOM crash on Render free tier |
 | `a5eb5a0` | build: Switch to CPU-only PyTorch and reduce gunicorn workers to 1 |

@@ -15,7 +15,7 @@ _ROOT = Path(__file__).resolve().parents[3]  # SemanticSearchSystem/
 load_dotenv(dotenv_path=_ROOT / ".env", override=True)
 
 MAX_PROMPT_CHARS = 6000   # ~1500 tokens — safe for llama3-8b 8k context
-_MAX_RETRIES     = 6
+_MAX_RETRIES     = 3
 _RETRY_BASE_SEC  = 3      # exponential backoff: 3s, 6s, 12s...
 
 _llm_cache = {}
@@ -87,6 +87,9 @@ def groq_call_llm(prompt: str) -> str:
             data = response.json()
             if "choices" in data and data["choices"]:
                 content = data["choices"][0]["message"]["content"]
+                # Cap cache to prevent unbounded memory growth
+                if len(_llm_cache) > 200:
+                    _llm_cache.clear()
                 _llm_cache[prompt] = content
                 return content
             raise RuntimeError(f"Unexpected Groq response: {data}")

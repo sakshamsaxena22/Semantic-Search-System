@@ -101,10 +101,11 @@ class VectorStore:
 
         if self._use_pinecone:
             self._ensure_pinecone()
-            vectors = []
+            total = 0
             for start in range(0, len(chunks), self._ENCODE_BATCH):
                 batch = chunks[start : start + self._ENCODE_BATCH]
                 embs = embedder.encode(batch, show_progress_bar=False).tolist()
+                vectors = []
                 for j, (chunk, emb) in enumerate(zip(batch, embs)):
                     idx = start + j
                     vectors.append((
@@ -112,10 +113,10 @@ class VectorStore:
                         emb,
                         {"source": doc_id, "chunk": idx, "text": chunk}
                     ))
-            # Upsert in batches of _UPSERT_BATCH
-            for start in range(0, len(vectors), self._UPSERT_BATCH):
-                self._index.upsert(vectors=vectors[start : start + self._UPSERT_BATCH])
-            logging.info("Upserted %d chunks to Pinecone for document '%s'", len(chunks), doc_id)
+                # Upsert this batch immediately, then discard
+                self._index.upsert(vectors=vectors)
+                total += len(vectors)
+            logging.info("Upserted %d chunks to Pinecone for document '%s'", total, doc_id)
         else:
             self._ensure_chroma()
             # Process in batches for ChromaDB too

@@ -3,7 +3,6 @@ Main application file for the Semantic Search System.
 Run from the project root: python -m backend.app.main
 Or directly:               python backend/app/main.py
 """
-print("DEBUG 1: Booting main.py", flush=True)
 import os
 import sys
 import uuid
@@ -22,14 +21,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-print("DEBUG 2: Root configured, loading service modules...", flush=True)
-print("DEBUG 2a: importing ocr_service", flush=True)
 from backend.app.services.ocr_service import extract_text_from_file
-print("DEBUG 2b: importing vector_service", flush=True)
 from backend.app.services.vector_service import VectorStore
-print("DEBUG 2c: importing groq_client", flush=True)
 from backend.app.services.groq_client import groq_call_llm
-print("DEBUG 2d: importing graph_service", flush=True)
 from backend.app.services.graph_service import KnowledgeGraph
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -37,8 +31,7 @@ BASE_DIR      = _ROOT
 APP_DIR       = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "backend", "data")
 
-print("DEBUG 3: Service modules imported, initializing app setup...", flush=True)
-# ── App setup ──────────────────────────────────────────────────────────────────
+# ── App setup ──────────────────────────────────────────────────────────────────────────
 app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "frontend"))
 app.config["UPLOAD_FOLDER"]      = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # 32 MB
@@ -46,12 +39,10 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-print("DEBUG 4: Instantiating VectorStore...", flush=True)
-# ── Shared state ───────────────────────────────────────────────────────────────
-vector_store   = VectorStore()
-print("DEBUG 5: Instantiating KnowledgeGraph...", flush=True)
+# ── Shared state ─────────────────────────────────────────────────────────────────────────
+vector_store    = VectorStore()
 knowledge_graph = KnowledgeGraph()
-print("DEBUG 6: Central state ready.", flush=True)
+logging.info("App initialized: VectorStore + KnowledgeGraph ready.")
 
 # ── Persistent job tracking (survives worker restarts) ─────────────────────────
 _JOBS_FILE = os.path.join(UPLOAD_FOLDER, ".jobs.json")
@@ -147,25 +138,26 @@ def _queue_worker():
 
 
 def _process_file(job_id: str, file_path: str, filename: str):
-    """Extract text → chunk → vector-index → graph-index."""
+    """Extract text → chunk → vector-index. Fast path: no graph RAG during upload."""
     try:
         text = extract_text_from_file(file_path)
+
+        # Delete the uploaded file after extraction to save disk
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+
         if not text or not text.strip():
             _set_job(job_id, "error", filename, "No text could be extracted from this file.")
             return
 
         chunks = [text[i : i + 500] for i in range(0, len(text), 500)]
+        del text  # free the full text string immediately
 
-        # Step 1: index into vector store
+        # Index into vector store (Pinecone or ChromaDB)
         vector_store.add_document(filename, chunks)
         logging.info("Vector-indexed '%s' — %d chunks", filename, len(chunks))
-
-        # Step 2: index into knowledge graph (hybrid spaCy + selective Groq)
-        try:
-            knowledge_graph.add_document(filename, chunks, groq_fn=groq_call_llm)
-        except Exception as graph_exc:
-            # Graph indexing failure is non-fatal — vector search still works
-            logging.warning("Graph indexing failed for '%s': %s", filename, graph_exc)
 
         _set_job(job_id, "done", filename, f"Indexed {len(chunks)} chunks.")
     except Exception as exc:

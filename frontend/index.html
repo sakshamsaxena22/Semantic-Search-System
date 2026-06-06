@@ -240,6 +240,23 @@
       margin-bottom: 20px;
       display: none;
     }
+    /* ── Job status dashboard ── */
+    #jobDashboard { margin-top: 16px; }
+    .job-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px;
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 6px;
+      font-size: .85rem;
+      animation: fadeIn .2s ease;
+    }
+    .job-row .job-icon { font-size: 1rem; flex-shrink: 0; }
+    .job-row .job-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .job-row .job-msg { color: var(--muted); font-size: .78rem; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .job-row.done { border-color: rgba(34,197,94,.25); }
+    .job-row.error { border-color: rgba(239,68,68,.25); }
   </style>
 </head>
 <body>
@@ -279,6 +296,7 @@
     </div>
 
     <div id="uploadStatus"></div>
+    <div id="jobDashboard"></div>
   </div>
 
   <!-- Query card -->
@@ -354,68 +372,91 @@
     progressWrap.style.display = 'block';
     progressBar.style.width = '0%';
     uploadStatus.innerHTML = '';
+    const dashboard = document.getElementById('jobDashboard');
+    dashboard.innerHTML = '';
 
-    let success = [], failed = [];
-    for (let i = 0; i < selectedFiles.length; i++) {
-      const f = selectedFiles[i];
+    // Phase 1: Upload all files rapidly, collect job IDs
+    const jobs = [];  // [{jobId, filename, status, message}]
+    let uploadedCount = 0;
 
-      // Client-side size guard
+    for (const f of selectedFiles) {
       if (f.size > MAX_FILE_BYTES) {
-        failed.push(`${f.name} (too large — max 32 MB)`);
-        progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
+        jobs.push({jobId: null, filename: f.name, status: 'error', message: 'Too large (max 32 MB)'});
+        renderDashboard(dashboard, jobs);
         continue;
       }
-
-      uploadStatus.innerHTML = `<span style="color:var(--muted)">⏳ Uploading ${f.name}…</span>`;
+      uploadStatus.innerHTML = `<span style="color:var(--muted)">⏳ Sending ${f.name}…</span>`;
       const fd = new FormData();
       fd.append('file', f);
-
       try {
-        const res = await fetch(getBackendUrl('/upload'), { method: 'POST', body: fd });
-        let data = {};
-        try { data = await res.json(); } catch (_) {}
-
-        if (!res.ok) {
-          failed.push(`${f.name} (${data.message || 'HTTP ' + res.status})`);
-          progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
-          continue;
-        }
-
-        // Server accepted file — poll for OCR/indexing completion
-        const jobId = data.job_id;
-        uploadStatus.innerHTML = `<span style="color:var(--muted)">🔍 Extracting text from <b>${f.name}</b>… (may take 1–2 min for image PDFs)</span>`;
-        const result = await pollJob(jobId);
-
-        if (result.status === 'done') {
-          success.push(f.name);
+        const res = await fetch(getBackendUrl('/upload'), {method: 'POST', body: fd});
+        const data = await res.json();
+        if (res.ok && data.job_id) {
+          jobs.push({jobId: data.job_id, filename: f.name, status: 'processing', message: 'Queued'});
         } else {
-          failed.push(`${f.name} (${result.message || 'processing failed'})`);
+          jobs.push({jobId: null, filename: f.name, status: 'error', message: data.message || 'Upload failed'});
         }
       } catch (err) {
-        failed.push(`${f.name} (network error: ${err.message})`);
+        jobs.push({jobId: null, filename: f.name, status: 'error', message: 'Network error'});
       }
-
-      progressBar.style.width = `${Math.round(((i+1)/selectedFiles.length)*100)}%`;
+      uploadedCount++;
+      progressBar.style.width = `${Math.round((uploadedCount / selectedFiles.length) * 100)}%`;
+      renderDashboard(dashboard, jobs);
     }
 
-    setUploadLoading(false);
-    const parts = [];
-    if (success.length) parts.push(`<span class="status-ok">✓ ${success.length} file(s) uploaded & indexed.</span>`);
-    if (failed.length)  parts.push(`<span class="status-err">✗ Failed:<br>${failed.map(f=>'&nbsp;&nbsp;• '+f).join('<br>')}</span>`);
-    uploadStatus.innerHTML = parts.join('<br>');
-  }
+    uploadStatus.innerHTML = `<span style="color:var(--muted)">🔄 Processing ${jobs.filter(j => j.status === 'processing').length} file(s)…</span>`;
 
-  async function pollJob(jobId, intervalMs = 2000, maxWaitMs = 300000) {
+    // Phase 2: Poll all pending jobs simultaneously
+    const maxWaitMs = 600000; // 10 min safety
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, intervalMs));
-      try {
-        const res  = await fetch(getBackendUrl(`/status/${jobId}`));
-        const data = await res.json();
-        if (data.status === 'done' || data.status === 'error') return data;
-      } catch (_) { /* ignore transient network hiccup, keep polling */ }
+      const pending = jobs.filter(j => j.status === 'processing');
+      if (pending.length === 0) break;
+      await new Promise(r => setTimeout(r, 3000));
+      for (const job of pending) {
+        try {
+          const res = await fetch(getBackendUrl(`/status/${job.jobId}`));
+          const data = await res.json();
+          if (data.status === 'done' || data.status === 'error') {
+            job.status = data.status;
+            job.message = data.message || '';
+          }
+        } catch (_) { /* transient error, keep polling */ }
+      }
+      renderDashboard(dashboard, jobs);
+      const doneCount = jobs.filter(j => j.status !== 'processing').length;
+      uploadStatus.innerHTML = `<span style="color:var(--muted)">🔄 Processing… ${doneCount}/${jobs.length} complete</span>`;
     }
-    return { status: 'error', message: 'Timed out waiting for processing' };
+
+    // Mark any remaining processing jobs as timed out
+    for (const job of jobs) {
+      if (job.status === 'processing') {
+        job.status = 'error';
+        job.message = 'Timed out';
+      }
+    }
+    renderDashboard(dashboard, jobs);
+
+    // Final summary
+    const successCount = jobs.filter(j => j.status === 'done').length;
+    const failCount = jobs.filter(j => j.status === 'error').length;
+    const parts = [];
+    if (successCount) parts.push(`<span class="status-ok">✓ ${successCount} file(s) uploaded & indexed.</span>`);
+    if (failCount) parts.push(`<span class="status-err">✗ ${failCount} file(s) failed.</span>`);
+    uploadStatus.innerHTML = parts.join('<br>');
+    setUploadLoading(false);
+  }
+
+  function renderDashboard(container, jobs) {
+    container.innerHTML = jobs.map(j => {
+      const icon = j.status === 'done' ? '✅' : j.status === 'error' ? '❌' : '⏳';
+      const cls = j.status === 'done' ? 'done' : j.status === 'error' ? 'error' : '';
+      return `<div class="job-row ${cls}">
+        <span class="job-icon">${icon}</span>
+        <span class="job-name">${j.filename}</span>
+        <span class="job-msg">${j.message}</span>
+      </div>`;
+    }).join('');
   }
 
   function setUploadLoading(on) {

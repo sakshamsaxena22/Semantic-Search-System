@@ -44,7 +44,7 @@ else:
     )
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
-_OCR_DPI        = 200   # DPI for PDF→image render; 200 gives good accuracy
+_OCR_DPI        = 150   # DPI for PDF→image render; 150 balances accuracy vs RAM/speed
 _MIN_TEXT_CHARS = 20    # pages with fewer chars are treated as image-only
 _TESS_CONFIG    = "--oem 3 --psm 3"   # LSTM engine + auto page-seg
 

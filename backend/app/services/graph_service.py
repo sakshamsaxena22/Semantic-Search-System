@@ -68,7 +68,7 @@ _BASE_DIR = Path(__file__).resolve().parents[3]          # SemanticSearchSystem/
 _GRAPH_PATH = str(_BASE_DIR / "backend" / "data" / "knowledge_graph.pkl")
 
 DENSE_CHUNK_THRESHOLD = 300   # chars; chunks above this get LLM relation extraction
-MAX_LLM_CHUNKS_PER_DOC = 10  # limit Groq calls per document ingestion
+MAX_LLM_CHUNKS_PER_DOC = 3   # limit Groq calls per document ingestion (was 10 — too slow)
 GRAPH_HOP_DEPTH = 1           # how many hops to walk at query time
 
 
@@ -218,6 +218,11 @@ class KnowledgeGraph:
                 logging.debug("Chunk %d: LLM extracted %d relation triples", i, len(triples))
 
         self._save()
+        # Cap registry to prevent unbounded memory growth
+        if len(self._chunk_registry) > 5000:
+            keys = sorted(self._chunk_registry.keys())
+            for k in keys[:-5000]:
+                del self._chunk_registry[k]
         logging.info(
             "Graph updated for '%s': %d nodes, %d edges",
             doc_id, self._G.number_of_nodes(), self._G.number_of_edges()
