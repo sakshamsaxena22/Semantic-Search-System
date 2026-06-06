@@ -3,6 +3,7 @@ Main application file for the Semantic Search System.
 Run from the project root: python -m backend.app.main
 Or directly:               python backend/app/main.py
 """
+print("DEBUG 1: Booting main.py", flush=True)
 import os
 import sys
 import uuid
@@ -18,9 +19,14 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+print("DEBUG 2: Root configured, loading service modules...", flush=True)
+print("DEBUG 2a: importing ocr_service", flush=True)
 from backend.app.services.ocr_service import extract_text_from_file
+print("DEBUG 2b: importing vector_service", flush=True)
 from backend.app.services.vector_service import VectorStore
+print("DEBUG 2c: importing groq_client", flush=True)
 from backend.app.services.groq_client import groq_call_llm
+print("DEBUG 2d: importing graph_service", flush=True)
 from backend.app.services.graph_service import KnowledgeGraph
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -28,17 +34,21 @@ BASE_DIR      = _ROOT
 APP_DIR       = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "backend", "data")
 
+print("DEBUG 3: Service modules imported, initializing app setup...", flush=True)
 # ── App setup ──────────────────────────────────────────────────────────────────
-app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"))
+app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "frontend"))
 app.config["UPLOAD_FOLDER"]      = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024   # 32 MB
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
+print("DEBUG 4: Instantiating VectorStore...", flush=True)
 # ── Shared state ───────────────────────────────────────────────────────────────
 vector_store   = VectorStore()
+print("DEBUG 5: Instantiating KnowledgeGraph...", flush=True)
 knowledge_graph = KnowledgeGraph()
+print("DEBUG 6: Central state ready.", flush=True)
 
 # job_id → {"status": "processing"|"done"|"error", "file": str, "message": str}
 _jobs: dict[str, dict] = {}
@@ -54,7 +64,7 @@ def too_large(e):
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route("/")
 def home():
-    return render_template("upload.html")
+    return render_template("index.html")
 
 
 @app.route("/upload", methods=["POST"])

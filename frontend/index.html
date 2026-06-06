@@ -302,6 +302,16 @@
 </div>
 
 <script>
+  // ── Set your Render backend URL here ───────────────────────────────────────
+  // E.g., const BACKEND_URL = "https://semantic-search-system.onrender.com";
+  // Falls back to window.location.origin if hosted together.
+  const BACKEND_URL = ""; 
+
+  function getBackendUrl(path) {
+    if (!BACKEND_URL) return path;
+    return `${BACKEND_URL.replace(/\/$/, '')}${path}`;
+  }
+
   const dropZone   = document.getElementById('dropZone');
   const fileInput  = document.getElementById('fileInput');
   const fileList   = document.getElementById('fileList');
@@ -361,7 +371,7 @@
       fd.append('file', f);
 
       try {
-        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const res = await fetch(getBackendUrl('/upload'), { method: 'POST', body: fd });
         let data = {};
         try { data = await res.json(); } catch (_) {}
 
@@ -400,7 +410,7 @@
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, intervalMs));
       try {
-        const res  = await fetch(`/status/${jobId}`);
+        const res  = await fetch(getBackendUrl(`/status/${jobId}`));
         const data = await res.json();
         if (data.status === 'done' || data.status === 'error') return data;
       } catch (_) { /* ignore transient network hiccup, keep polling */ }
@@ -421,7 +431,7 @@
     answerBox.style.display = 'none';
 
     try {
-      const res = await fetch('/query', {
+      const res = await fetch(getBackendUrl('/query'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query })
