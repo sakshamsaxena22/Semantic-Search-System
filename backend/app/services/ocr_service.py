@@ -106,7 +106,16 @@ def extract_text_from_file(file_path: str) -> str:
     # ── DOCX ──────────────────────────────────────────────────────────────────
     elif ext == ".docx":
         doc = Document(file_path)
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        texts = []
+        for p in doc.paragraphs:
+            if p.text.strip():
+                texts.append(p.text.strip())
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip() and cell.text.strip() not in texts:
+                        texts.append(cell.text.strip())
+        return "\n".join(texts)
 
     # ── Plain text ────────────────────────────────────────────────────────────
     elif ext == ".txt":
