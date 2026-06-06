@@ -88,7 +88,7 @@ The **Semantic Search System** resolves organizational challenges associated wit
 1. **Asynchronous Document Upload & Ingestion:**
    Files are posted in parallel to `/upload` (handled by [main.py](file:///d:/SemanticSearchSystem/backend/app/main.py)). The server registers each file in a disk-persisted job tracker (`.jobs.json`), enqueues it in a sequential `queue.Queue`, and immediately returns HTTP 202 to the frontend. A single background daemon thread processes files one at a time.
 2. **Text Extraction & Cleanup:**
-   The background worker extracts text from each file via PyMuPDF or Tesseract OCR (handled by [ocr_service.py](file:///d:/SemanticSearchSystem/backend/app/services/ocr_service.py)). OCR pages are rendered at **150 DPI** (reduced from 200 DPI to save ~44% RAM). The raw file is deleted from disk immediately after text extraction to keep disk footprint minimal.
+   The background worker extracts text from each file. For PDFs, it directly extracts the native text layer via PyMuPDF (OCR is completely bypassed to make PDF processing instantaneous). Standalone image files are processed using Tesseract OCR at 150 DPI. The raw file is deleted from disk immediately after text extraction to keep disk footprint minimal.
 3. **Low-Memory Vector Indexing:**
    Extracted text is split into 500-character chunks. The system lazy-loads the SentenceTransformer model and processes chunks in batches of 32. Chunks are embedded and upserted directly into **Pinecone** (or local ChromaDB SQLite if Pinecone credentials are not provided) via [vector_service.py](file:///d:/SemanticSearchSystem/backend/app/services/vector_service.py). To prevent OOM errors, vector lists are upserted immediately and garbage-collected, and Graph RAG ingestion (`knowledge_graph.add_document()`) is bypassed during file upload.
 4. **Graph-Augmented Query Retrieval (Graph RAG):**
@@ -135,8 +135,8 @@ graph TD
 
 ### 4.1. Text Extraction Service ([ocr_service.py](file:///d:/SemanticSearchSystem/backend/app/services/ocr_service.py))
 * **What It Is:** Text parser extracting string outputs from documents.
-* **How It Works:** Parses text layers directly for text PDFs, DOCX, and TXT files. For images and scanned PDFs, pages are rendered into images at **150 DPI** and run through Tesseract OCR.
-* **Optimizations:** Reduced DPI from 200 to 150, which cuts peak memory allocation and speeds up OCR processing by almost 2x.
+* **How It Works:** Parses text layers directly for PDFs, DOCX, and TXT files. PyMuPDF is used to extract native text for PDFs, and OCR is completely bypassed for all PDF files. Standalone image files (JPG, PNG, etc.) are processed using Tesseract OCR.
+* **Optimizations:** Bypassed OCR entirely for PDF files to make upload/indexing times instantaneous. Standalone image files are processed at 150 DPI (reduced from 200 DPI) to optimize RAM and speed.
 
 ### 4.2. Vector Storage Engine ([vector_service.py](file:///d:/SemanticSearchSystem/backend/app/services/vector_service.py))
 * **What It Is:** Vector store interface managing semantic search operations.
