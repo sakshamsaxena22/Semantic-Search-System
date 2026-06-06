@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+ENV HF_HOME=/app/.cache/huggingface
+
+# Install CPU-only PyTorch to save RAM and disk space (prevents CUDA packages from loading)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # Copy & install Python dependencies first (layer cache)
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
@@ -28,5 +33,5 @@ ENV PORT=5000
 
 EXPOSE 5000
 
-# Run via gunicorn — 2 workers, bind to $PORT
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 backend.app.main:app
+# Run via gunicorn — 1 worker to save RAM and avoid OOM, bind to $PORT
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 backend.app.main:app
