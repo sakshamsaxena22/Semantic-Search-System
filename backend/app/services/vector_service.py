@@ -23,27 +23,41 @@ _EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 80 MB, CPU-friendly
 
 class VectorStore:
     """
-    Persistent vector store backed by ChromaDB.
-    Documents are embedded with all-MiniLM-L6-v2 and stored on disk so
-    they survive server restarts.
+    Vector store backing. Supports production Pinecone DB if PINECONE_API_KEY
+    is configured, otherwise falls back to local persistent ChromaDB.
     """
 
     def __init__(self, collection_name: str = "docs"):
-        os.makedirs(_CHROMA_DIR, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=_CHROMA_DIR,
-            settings=Settings(anonymized_telemetry=False),
-        )
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
         self._embedder = SentenceTransformer(_EMBED_MODEL)
-        logging.info(
-            "ChromaDB VectorStore ready — collection '%s', persist dir: %s",
-            collection_name,
-            _CHROMA_DIR,
-        )
+        
+        self.pinecone_api_key = os.environ.get("PINECONE_API_KEY", "")
+        self.pinecone_index_name = os.environ.get("PINECONE_INDEX_NAME", "")
+
+        if self.pinecone_api_key and self.pinecone_index_name:
+            from pinecone import Pinecone
+            self._pc = Pinecone(api_key=self.pinecone_api_key)
+            self._index = self._pc.Index(self.pinecone_index_name)
+            self._use_pinecone = True
+            logging.info(
+                "Pinecone VectorStore ready — Index: %s",
+                self.pinecone_index_name
+            )
+        else:
+            self._use_pinecone = False
+            os.makedirs(_CHROMA_DIR, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=_CHROMA_DIR,
+                settings=Settings(anonymized_telemetry=False),
+            )
+            self._collection = self._client.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+            logging.info(
+                "ChromaDB VectorStore ready — collection '%s', persist dir: %s",
+                collection_name,
+                _CHROMA_DIR,
+            )
 
     # ------------------------------------------------------------------
     def add_document(self, doc_id: str, chunks: list[str]) -> None:
@@ -52,17 +66,33 @@ class VectorStore:
             logging.warning("add_document called with empty chunk list for '%s'", doc_id)
             return
 
-        ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
         embeddings = self._embedder.encode(chunks, show_progress_bar=False).tolist()
-        metadatas = [{"source": doc_id, "chunk": i} for i in range(len(chunks))]
 
-        self._collection.upsert(
-            ids=ids,
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=metadatas,
-        )
-        logging.info("Upserted %d chunks for document '%s'", len(chunks), doc_id)
+        if self._use_pinecone:
+            vectors = []
+            for i, chunk in enumerate(chunks):
+                vectors.append((
+                    f"{doc_id}__{i}",
+                    embeddings[i],
+                    {
+                        "source": doc_id,
+                        "chunk": i,
+                        "text": chunk
+                    }
+                ))
+            # Upsert vectors to Pinecone
+            self._index.upsert(vectors=vectors)
+            logging.info("Upserted %d chunks to Pinecone for document '%s'", len(chunks), doc_id)
+        else:
+            ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
+            metadatas = [{"source": doc_id, "chunk": i} for i in range(len(chunks))]
+            self._collection.upsert(
+                ids=ids,
+                documents=chunks,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+            logging.info("Upserted %d chunks to ChromaDB for document '%s'", len(chunks), doc_id)
 
     # ------------------------------------------------------------------
     def query(self, query_text: str, top_k: int = 5) -> dict:
@@ -71,20 +101,45 @@ class VectorStore:
         Returns a dict compatible with the original interface:
             {"documents": [[chunk, ...]], "metadatas": [[meta, ...]]}
         """
-        count = self._collection.count()
-        if count == 0:
-            logging.warning("Vector store is empty — no documents indexed yet")
-            return {"documents": [], "metadatas": []}
-
         query_embedding = self._embedder.encode([query_text], show_progress_bar=False).tolist()
-        results = self._collection.query(
-            query_embeddings=query_embedding,
-            n_results=min(top_k, count),
-            include=["documents", "metadatas"],
-        )
-        logging.info(
-            "Query '%s' returned %d chunks",
-            query_text,
-            len(results.get("documents", [[]])[0]),
-        )
-        return results
+
+        if self._use_pinecone:
+            results = self._index.query(
+                vector=query_embedding[0],
+                top_k=top_k,
+                include_metadata=True
+            )
+            
+            documents = []
+            metadatas = []
+            for match in results.get("matches", []):
+                meta = match.get("metadata", {})
+                documents.append(meta.get("text", ""))
+                metadatas.append({
+                    "source": meta.get("source", ""),
+                    "chunk": int(meta.get("chunk", 0))
+                })
+            
+            logging.info(
+                "Pinecone query '%s' returned %d chunks",
+                query_text,
+                len(documents),
+            )
+            return {"documents": [documents], "metadatas": [metadatas]}
+        else:
+            count = self._collection.count()
+            if count == 0:
+                logging.warning("Vector store is empty — no documents indexed yet")
+                return {"documents": [], "metadatas": []}
+
+            results = self._collection.query(
+                query_embeddings=query_embedding,
+                n_results=min(top_k, count),
+                include=["documents", "metadatas"],
+            )
+            logging.info(
+                "ChromaDB query '%s' returned %d chunks",
+                query_text,
+                len(results.get("documents", [[]])[0]),
+            )
+            return results

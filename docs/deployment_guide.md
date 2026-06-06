@@ -1,168 +1,183 @@
-# Deployment Guide: Decoupled Multi-Platform Architecture
-## (Streamlit/Vercel + Render + Pinecone)
+# 🚀 Simple Project Deployment Guide (For Everyone)
 
-This guide details the deployment of the **Semantic Search System** in a fully production-grade, decoupled cloud architecture:
-* **Frontend:** Deployed to **Vercel** (Static/Next.js client) or **Streamlit Community Cloud** (Python interactive client).
-* **Backend:** Deployed to **Render** as a web service.
-* **Vector Database:** Hosted on **Pinecone** (Fully serverless external vector database).
+Welcome! This guide is written in plain English. You do **not** need to be a software developer or system administrator to deploy this project. If you can click buttons and copy-paste text, you can get this AI Document Intelligence platform up and running in **under 10 minutes**!
 
 ---
 
 ## 📋 Table of Contents
-1. [Architectural Diagram](#1-architectural-diagram)
-2. [Database Provisioning (Pinecone)](#2-database-provisioning-pinecone)
-3. [Backend API Deployment (Render)](#3-backend-api-deployment-render)
-4. [Frontend Deployments](#4-frontend-deployments)
-   * [Option A: Streamlit Community Cloud](#option-a-streamlit-community-cloud)
-   * [Option B: Vercel Static Web Hosting](#option-b-vercel-static-web-hosting)
-5. [Unified Configuration Settings (Environment Variables)](#5-unified-configuration-settings-environment-variables)
-6. [Monitoring & Troubleshooting](#6-monitoring--troubleshooting)
+1. [What is this project?](#1-what-is-this-project)
+2. [Step 1: Get Your Free AI Keys (Groq)](#step-1-get-your-free-ai-keys-groq)
+3. [Step 2: Setup Your Free Vector Database (Pinecone)](#step-2-setup-your-free-vector-database-pinecone)
+4. [Step 3: Deploy the Backend "Brain" (Render)](#step-3-deploy-the-backend-brain-render)
+5. [Step 4: Deploy the Frontend "Interface" (Vercel)](#step-4-deploy-the-frontend-interface-vercel)
+6. [Step 5: Connect the Interface to the Brain](#step-5-connect-the-interface-to-the-brain)
+7. [Step 6: Test Your App!](#step-6-test-your-app)
+8. [Troubleshooting (When things don't work)](#troubleshooting-when-things-dont-work)
+9. [Optional: Local Computer Setup](#optional-local-computer-setup)
 
 ---
 
-## 1. Architectural Diagram
+## 1. What is this project?
 
-```mermaid
-graph TD
-    %% Clients / Frontends
-    subgraph Frontend Interfaces
-        StreamlitApp[Streamlit App: Hosted on Streamlit Cloud]
-        VercelApp[Web Client: Hosted on Vercel]
-    end
+This application allows you to upload text files, PDFs (including scanned papers), and images, and ask questions about them. An AI reads the files and answers your questions instantly, showing you exactly where it found the information.
 
-    %% API Server
-    subgraph Core App Gateway
-        RenderBackend[Flask API Backend: Hosted on Render]
-    end
-
-    %% External SaaS Providers
-    subgraph External SaaS & Database Layer
-        PineconeDB[(Pinecone Vector DB Cloud)]
-        GroqService[Groq API Cloud: llama-3.1-8b-instant]
-    end
-
-    %% Network Connections
-    StreamlitApp -->|HTTP Requests /query| RenderBackend
-    VercelApp -->|HTTP Requests /query| RenderBackend
-    RenderBackend -->|Metadata Queries / Vector Upsert| PineconeDB
-    RenderBackend -->|Generate Context Answers| GroqService
-```
+It is split into three main parts:
+1. **The Database (Pinecone):** Stores the text of your files so the system can search through them.
+2. **The Backend (The Brain):** The Python code that processes your files and talks to the AI model.
+3. **The Frontend (The Interface):** The web page you see in your browser with upload buttons and search boxes.
 
 ---
 
-## 2. Database Provisioning (Pinecone)
+## Step 1: Get Your Free AI Keys (Groq)
 
-Instead of a local, transient SQLite ChromaDB database, this setup uses **Pinecone** to scale the semantic search embeddings vector storage.
+The brain of this application uses **Groq**, a service that runs AI models very quickly. You need to get an API key (a secret password) so the application can talk to the AI.
 
-### 2.1. Create Pinecone Index
-1. Log in to your [Pinecone Console](https://console.pinecone.io).
-2. Click **Create Index**.
-3. **Configure Index Settings:**
+1. Go to the [Groq Console](https://console.groq.com/).
+2. Log in (you can create a free account using your Google/GitHub account or email).
+3. In the left sidebar, click on **API Keys**.
+4. Click **Create API Key**.
+5. Give it a name (e.g., `My-Search-System`), click **Create**, and **copy the long key** (it starts with `gsk_`). 
+   > ⚠️ **Important:** Copy this key and save it somewhere safe. You will not be able to view it again once you close the window.
+
+---
+
+## Step 2: Setup Your Free Vector Database (Pinecone)
+
+Instead of saving uploaded files on a single computer, the application uses **Pinecone** to store file data securely in the cloud.
+
+1. Go to [Pinecone](https://www.pinecone.io/) and click **Sign Up Free**.
+2. Log in using your email or Google account.
+3. Click the **Create Index** button.
+4. **Configure your Index settings exactly like this:**
    * **Index Name:** `semantic-search-index`
-   * **Dimensions:** `384` (This must match the dimensional output of the `sentence-transformers/all-MiniLM-L6-v2` embedding model).
+   * **Dimensions:** `384` *(Must be exactly 384)*
    * **Metric:** `cosine`
-   * **Project Type:** Select `Serverless` (Recommended: choose `us-east-1` or the region closest to your Render server).
-4. Copy your **API Key** and **Host URL** (e.g., `https://semantic-search-index-xxxx.svc.us-east1-aws.pinecone.io`) from the index settings dashboard.
+   * **Project Type:** Select `Serverless`. Choose the cloud region closest to you.
+5. Click **Create Index**.
+6. Once created, copy the **Index Name** (`semantic-search-index`).
+7. In the left sidebar, click **API Keys** and **copy the API Key** (a long string of numbers and letters).
 
 ---
 
-## 3. Backend API Deployment (Render)
+## Step 3: Deploy the Backend "Brain" (Render)
 
-The Flask application processes files and coordinates LLM prompting.
+We will host the python backend code on **Render**, a platform that runs web applications in the cloud for free.
 
-### 3.1. Code Modifications for Pinecone Integration
-Ensure the backend vector service imports and uses the `pinecone` client instead of `chromadb`.
-* Install the Pinecone Python client in `requirements.txt`:
-  ```text
-  pinecone-client>=3.0.0
-  ```
+1. Create a free account on [Render](https://render.com) using your GitHub account.
+2. Once logged in, click the blue **New +** button in the top right, and select **Web Service**.
+3. Choose **Build and deploy from a Git repository**, click **Next**, and connect your GitHub repository `Semantic-Search-System`.
+4. **Configure your deployment settings exactly like this:**
+   * **Name:** `my-semantic-search-api`
+   * **Region:** Choose the region closest to you (e.g., *Oregon (US West)*).
+   * **Branch:** `main`
+   * **Root Directory:** *Leave this blank/empty.*
+   * **Runtime:** Select `Docker`.
+5. Scroll down to the **Environment Variables** section and click **Add Environment Variable** to add these three keys:
+   1. **GROQ_API_KEY**: *Paste your Groq API Key (from Step 1, starts with `gsk_`)*.
+   2. **PINECONE_API_KEY**: *Paste your Pinecone API Key (from Step 2)*.
+   3. **PINECONE_INDEX_NAME**: `semantic-search-index` *(Must match your index name)*.
+6. Scroll down to the **Disk** section to set up temporary database storage (for relationship graphs):
+   * Click **Add Disk**.
+   * **Name:** `database-disk`
+   * **Mount Path:** `/app/backend/data`
+   * **Size:** `10 GiB` (free tier is fine).
+7. Click **Create Web Service** at the bottom of the page.
 
-### 3.2. Deploy Backend on Render
-1. Log in to [Render Dashboard](https://dashboard.render.com).
-2. Click **New** > **Web Service** and link your Git repository.
-3. **Set Build Settings:**
-   * **Runtime:** `Docker` (or `Python`)
-   * **Build Command (if using Python):** `pip install -r requirements.txt`
-   * **Start Command (if using Python):** `gunicorn --bind 0.0.0.0:5000 backend.app.main:app`
-4. **Environment Variables Configuration (Critical):**
-   Configure the variables under **Settings** > **Environment Variables**:
-   * `GROQ_API_KEY`: *Your Groq API key*
-   * `PINECONE_API_KEY`: *Your Pinecone access credential key*
-   * `PINECONE_INDEX_NAME`: `semantic-search-index`
-   * `TESSERACT_CMD`: `/usr/bin/tesseract` (Tesseract default path on Linux containers)
-5. **CORS Settings:**
-   Ensure `CORS(app)` is configured in `main.py` to allow cross-origin requests originating from your Streamlit or Vercel domains.
+Render will now build your container. This will take **3–4 minutes** because it is downloading and caching the AI models inside the server. 
+Once finished, you will see a green **Live** badge, and a public URL at the top left (e.g., `https://my-semantic-search-api.onrender.com`). **Copy this URL.**
 
 ---
 
-## 4. Frontend Deployments
+## Step 4: Deploy the Frontend "Interface" (Vercel)
 
-You can choose to deploy either a Streamlit dashboard or a static Vercel client.
+We will host the web interface on **Vercel**, which is free and loads web pages instantly.
 
-### Option A: Streamlit Community Cloud
+1. Create a free account on [Vercel](https://vercel.com) using your GitHub account.
+2. Click **Add New** > **Project**.
+3. Locate your `Semantic-Search-System` repository and click **Import**.
+4. **Configure your project settings:**
+   * **Framework Preset:** Select `Other`.
+   * **Root Directory:** Click Edit and select the **`frontend`** folder.
+5. Click **Deploy**.
+6. Within 30 seconds, Vercel will complete the deploy. Click on the screenshot preview of your website to open your live web interface!
 
-Streamlit is ideal for deploying Python-based analytics interfaces.
+---
 
-1. **Create Streamlit Entrypoint (`app.py`):**
-   Create a fast frontend app interface at the repository root level:
-   ```python
-   import streamlit as st
-   import requests
+## Step 5: Connect the Interface to the Brain
 
-   BACKEND_URL = st.secrets.get("BACKEND_URL", "http://localhost:5000")
+Right now, your frontend interface doesn't know where the backend API brain is running. We need to connect them.
 
-   st.title("Document Intelligence platform")
-
-   # File Uploader
-   uploaded_files = st.file_uploader("Upload files", accept_multiple_files=True)
-   if st.button("Ingest Documents") and uploaded_files:
-       for file in uploaded_files:
-           res = requests.post(f"{BACKEND_URL}/upload", files={"file": file})
-           st.write(f"Queued: {file.name}")
-
-   # Query Box
-   query = st.text_input("Enter Question:")
-   if st.button("Ask AI") and query:
-       res = requests.post(f"{BACKEND_URL}/query", json={"query": query}).json()
-       st.subheader("Answer:")
-       st.write(res.get("answer"))
-       st.subheader("Citations:")
-       st.json(res.get("citations"))
+1. Open your code repository on GitHub or your local computer.
+2. Open the file named **`frontend/index.html`** in a text editor or on GitHub.
+3. Locate line **308** (inside the `<script>` tag near the bottom of the file):
+   ```javascript
+   // ── Set your Render backend URL here ───────────────────────────────────────
+   const BACKEND_URL = ""; 
    ```
-2. **Deploy on Streamlit:**
-   * Connect your GitHub repo to [Streamlit Community Cloud](https://share.streamlit.io/).
-   * Under project **Settings** > **Secrets**, define:
-     ```toml
-     BACKEND_URL = "https://your-backend-url.onrender.com"
-     ```
-
-### Option B: Vercel Static Web Hosting
-
-Vercel is optimal for static HTML pages or React/Next.js single-page frontends.
-
-1. **Deploy Frontend Folder:**
-   * Point Vercel to your repository.
-   * If serving standard static HTML, set the **Root Directory** to `backend/app/templates/` or copy the HTML file to a root-level `/public` folder.
-2. **Configure Backend URL:**
-   * Update the `fetch()` route targets inside the frontend JavaScript script block to reference the Render backend endpoint instead of relative root routes (e.g. change `/query` to `https://your-backend-url.onrender.com/query`).
+4. Paste the Render URL you copied in **Step 3** inside the quotes:
+   ```javascript
+   const BACKEND_URL = "https://my-semantic-search-api.onrender.com"; 
+   ```
+5. Save the file and commit the changes (Vercel will automatically detect this change and redeploy your website within a few seconds).
 
 ---
 
-## 5. Unified Configuration Settings (Environment Variables)
+## Step 6: Test Your App!
 
-Here is a summary of the required configurations across each platform:
-
-| Component | Target Platform | Environment Key | Purpose |
-| :--- | :--- | :--- | :--- |
-| **Backend API** | Render | `GROQ_API_KEY` | Authenticates Chat model inference. |
-| **Backend API** | Render | `PINECONE_API_KEY` | Authenticates Pinecone read/write commands. |
-| **Backend API** | Render | `PINECONE_INDEX_NAME` | Specifies the Pinecone index namespace. |
-| **Frontend** | Streamlit / Vercel | `BACKEND_URL` | Specifies the Render server target URL. |
+1. Open your Vercel website link.
+2. Click **Drag & drop files here** and select a PDF or Text file.
+3. Click the blue **Upload Files** button. 
+   * *The status line will show "Uploading...", then "Extracting text...". Once complete, you will see a green checkmark indicating successful ingestion.*
+4. Type a question about the file in the **Ask a Question** box and click **Search**.
+5. The AI will write the response answer and list the source document references below!
 
 ---
 
-## 6. Monitoring & Troubleshooting
+## Troubleshooting (When things don't work)
 
-* **CORS Blocked Responses:** If the frontend console displays CORS errors, ensure `CORS(app)` in [main.py](file:///d:/SemanticSearchSystem/backend/app/main.py) allows requests from Streamlit (`*.streamlit.app`) or Vercel (`*.vercel.app`) subdomains.
-* **Vector Query Failures:** Ensure the Pinecone index is configured with exactly **384 dimensions**. Configuring an incorrect number of dimensions will cause embedding lookup tasks to fail.
-* **Cold Start Lag:** Free-tier services on Render spin down after inactivity. The first API call from your frontend may take 30-50 seconds to respond as the Render container boots up and reloads the sentence-transformers model.
+### 🔴 The upload is stuck on "Uploading..." or returns a network error
+* **Root Cause:** Your Vercel frontend is calling an incorrect or dead backend URL.
+* **Fix:** Verify you updated line 308 in `frontend/index.html` with your exact Render URL (ensure it starts with `https://` and has no typos).
+
+### 🔴 The search answers return "⚠️ Groq API key is not set"
+* **Root Cause:** Your Render environment variable is missing or incorrect.
+* **Fix:** Go to your Render Web Service dashboard, click **Environment**, check the `GROQ_API_KEY` spelling, paste your Groq key again, and save changes.
+
+### 🔴 The upload fails with connection error to Pinecone
+* **Root Cause:** Incorrect Pinecone credentials or your index isn't ready.
+* **Fix:** Verify you set `PINECONE_API_KEY` and `PINECONE_INDEX_NAME` correctly on the Render environment dashboard, and make sure your index name is typed exactly as shown in the Pinecone console.
+
+### 🔴 The first query takes 30-50 seconds to load
+* **Root Cause:** Render puts free services to sleep after 15 minutes of inactivity. When you call the website, it takes a moment to boot the container back up.
+* **Fix:** This is normal for the free tier. Once awake, subsequent questions will respond in under 2 seconds.
+
+---
+
+## Optional: Local Computer Setup
+
+If you want to run the project locally on your own computer instead of in the cloud:
+
+1. **Required tools:** Install Python 3.10+, [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki), and [Poppler](https://blog.alivate.com.au/poppler-windows/) on your system.
+2. **Download code & install libraries:**
+   Open your command line terminal (PowerShell or Terminal) and run:
+   ```bash
+   git clone https://github.com/sakshamsaxena22/Semantic-Search-System.git
+   cd Semantic-Search-System
+   python -m venv venv
+   # Windows:
+   .\venv\Scripts\activate
+   # macOS/Linux:
+   source venv/bin/activate
+   pip install -r requirements.txt
+   python -m spacy download en_core_web_sm
+   ```
+3. **Configure Settings:**
+   Create a file named `.env` in the root folder and add your key:
+   ```env
+   GROQ_API_KEY=gsk_your_actual_key_here
+   ```
+4. **Run Server:**
+   ```bash
+   python backend/app/main.py
+   ```
+5. Open your web browser and go to **[http://localhost:5000](http://localhost:5000)**.
