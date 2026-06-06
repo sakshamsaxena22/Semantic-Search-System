@@ -33,5 +33,5 @@ ENV PORT=5000
 
 EXPOSE 5000
 
-# Run via gunicorn — 1 worker to save RAM and avoid OOM, bind to $PORT
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 backend.app.main:app
+# Run via gunicorn — 1 worker, preload to share memory, bind to $PORT
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --preload backend.app.main:app

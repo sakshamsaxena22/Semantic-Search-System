@@ -25,11 +25,15 @@ import pytesseract
 from docx import Document
 from PIL import Image
 
-# ── Tesseract binary path (Windows) ───────────────────────────────────────────
+# ── Tesseract binary path ─────────────────────────────────────────────────────
 _TESSERACT_DEFAULT_WIN = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+_TESSERACT_DEFAULT_LINUX = "/usr/bin/tesseract"
 _tess_cmd = os.environ.get("TESSERACT_CMD", "")
-if not _tess_cmd and os.path.isfile(_TESSERACT_DEFAULT_WIN):
-    _tess_cmd = _TESSERACT_DEFAULT_WIN
+if not _tess_cmd:
+    if os.path.isfile(_TESSERACT_DEFAULT_WIN):
+        _tess_cmd = _TESSERACT_DEFAULT_WIN
+    elif os.path.isfile(_TESSERACT_DEFAULT_LINUX):
+        _tess_cmd = _TESSERACT_DEFAULT_LINUX
 if _tess_cmd:
     pytesseract.pytesseract.tesseract_cmd = _tess_cmd
     logging.info("Tesseract binary: %s", _tess_cmd)
