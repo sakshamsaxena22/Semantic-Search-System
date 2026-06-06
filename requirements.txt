@@ -15,6 +15,7 @@ python-docx==1.2.0
 
 # ── Semantic vector store ──────────────────────────────────────────────
 chromadb==1.0.9
+pinecone-client>=3.0.0
 sentence-transformers==3.4.1
 
 # ── Graph RAG ─────────────────────────────────────────────────────────
