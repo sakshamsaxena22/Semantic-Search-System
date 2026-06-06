@@ -9,6 +9,9 @@ import sys
 import uuid
 import logging
 import threading
+import json
+import gc
+import queue
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -50,9 +53,47 @@ print("DEBUG 5: Instantiating KnowledgeGraph...", flush=True)
 knowledge_graph = KnowledgeGraph()
 print("DEBUG 6: Central state ready.", flush=True)
 
-# job_id → {"status": "processing"|"done"|"error", "file": str, "message": str}
-_jobs: dict[str, dict] = {}
+# ── Persistent job tracking (survives worker restarts) ─────────────────────────
+_JOBS_FILE = os.path.join(UPLOAD_FOLDER, ".jobs.json")
 _jobs_lock = threading.Lock()
+
+def _load_jobs() -> dict:
+    """Load jobs from disk. Returns empty dict on any failure."""
+    try:
+        if os.path.isfile(_JOBS_FILE):
+            with open(_JOBS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_jobs(jobs: dict):
+    """Persist jobs dict to disk."""
+    try:
+        with open(_JOBS_FILE, "w") as f:
+            json.dump(jobs, f)
+    except Exception as e:
+        logging.error("Failed to persist jobs: %s", e)
+
+def _set_job(job_id: str, status: str, filename: str, message: str = ""):
+    """Update a single job and persist to disk."""
+    with _jobs_lock:
+        jobs = _load_jobs()
+        jobs[job_id] = {"status": status, "file": filename, "message": message}
+        # Keep only the last 200 jobs to prevent unbounded growth
+        if len(jobs) > 200:
+            sorted_ids = sorted(jobs.keys())
+            for old_id in sorted_ids[:-200]:
+                del jobs[old_id]
+        _save_jobs(jobs)
+
+def _get_job(job_id: str) -> dict | None:
+    """Retrieve a single job."""
+    with _jobs_lock:
+        return _load_jobs().get(job_id)
+
+# ── Sequential processing queue (one file at a time = stable RAM) ──────────────
+_work_queue: queue.Queue = queue.Queue()
 
 
 # ── Error handlers ─────────────────────────────────────────────────────────────
@@ -81,37 +122,41 @@ def upload_doc():
     file.save(file_path)
     logging.info("Saved: %s", file_path)
 
-    # Create a job and process in the background so the browser never times out
+    # Create a persistent job and enqueue for sequential processing
     job_id = str(uuid.uuid4())
-    with _jobs_lock:
-        _jobs[job_id] = {"status": "processing", "file": filename, "message": ""}
-
-    threading.Thread(
-        target=_process_file,
-        args=(job_id, file_path, filename),
-        daemon=True,
-    ).start()
+    _set_job(job_id, "processing", filename)
+    _work_queue.put((job_id, file_path, filename))
 
     # Return 202 immediately — frontend will poll /status/<job_id>
     return jsonify({"status": "processing", "job_id": job_id, "file": filename}), 202
 
 
+def _queue_worker():
+    """Single background thread that processes files one at a time."""
+    while True:
+        job_id, file_path, filename = _work_queue.get()
+        try:
+            _process_file(job_id, file_path, filename)
+        except Exception as exc:
+            logging.error("Queue worker error for %s: %s", filename, exc, exc_info=True)
+            _set_job(job_id, "error", filename, str(exc))
+        finally:
+            # Free memory between files
+            gc.collect()
+            _work_queue.task_done()
+
+
 def _process_file(job_id: str, file_path: str, filename: str):
-    """Background worker: extract text → chunk → vector-index → graph-index."""
+    """Extract text → chunk → vector-index → graph-index."""
     try:
         text = extract_text_from_file(file_path)
         if not text or not text.strip():
-            with _jobs_lock:
-                _jobs[job_id] = {
-                    "status": "error",
-                    "file": filename,
-                    "message": "No text could be extracted from this file.",
-                }
+            _set_job(job_id, "error", filename, "No text could be extracted from this file.")
             return
 
         chunks = [text[i : i + 500] for i in range(0, len(text), 500)]
 
-        # Step 1: index into ChromaDB vector store
+        # Step 1: index into vector store
         vector_store.add_document(filename, chunks)
         logging.info("Vector-indexed '%s' — %d chunks", filename, len(chunks))
 
@@ -122,26 +167,20 @@ def _process_file(job_id: str, file_path: str, filename: str):
             # Graph indexing failure is non-fatal — vector search still works
             logging.warning("Graph indexing failed for '%s': %s", filename, graph_exc)
 
-        with _jobs_lock:
-            _jobs[job_id] = {
-                "status": "done",
-                "file": filename,
-                "message": f"Indexed {len(chunks)} chunks.",
-            }
+        _set_job(job_id, "done", filename, f"Indexed {len(chunks)} chunks.")
     except Exception as exc:
         logging.error("Error processing %s: %s", filename, exc, exc_info=True)
-        with _jobs_lock:
-            _jobs[job_id] = {
-                "status": "error",
-                "file": filename,
-                "message": str(exc),
-            }
+        _set_job(job_id, "error", filename, str(exc))
+
+
+# Start the single sequential worker thread
+_worker_thread = threading.Thread(target=_queue_worker, daemon=True)
+_worker_thread.start()
 
 
 @app.route("/status/<job_id>", methods=["GET"])
 def job_status(job_id: str):
-    with _jobs_lock:
-        job = _jobs.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return jsonify({"status": "error", "message": "Unknown job ID"}), 404
     return jsonify(job)

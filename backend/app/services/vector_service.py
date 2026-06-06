@@ -87,40 +87,49 @@ class VectorStore:
             )
 
     # ------------------------------------------------------------------
+    # Tuning: encode and upsert in small batches to cap peak memory
+    _ENCODE_BATCH = 32    # chunks per SentenceTransformer.encode() call
+    _UPSERT_BATCH = 100   # vectors per Pinecone upsert() call
+
     def add_document(self, doc_id: str, chunks: list[str]) -> None:
-        """Embed and upsert all chunks for a document."""
+        """Embed and upsert all chunks for a document, in memory-safe batches."""
         if not chunks:
             logging.warning("add_document called with empty chunk list for '%s'", doc_id)
             return
 
-        embeddings = _get_embedder().encode(chunks, show_progress_bar=False).tolist()
+        embedder = _get_embedder()
 
         if self._use_pinecone:
             self._ensure_pinecone()
             vectors = []
-            for i, chunk in enumerate(chunks):
-                vectors.append((
-                    f"{doc_id}__{i}",
-                    embeddings[i],
-                    {
-                        "source": doc_id,
-                        "chunk": i,
-                        "text": chunk
-                    }
-                ))
-            # Upsert vectors to Pinecone
-            self._index.upsert(vectors=vectors)
+            for start in range(0, len(chunks), self._ENCODE_BATCH):
+                batch = chunks[start : start + self._ENCODE_BATCH]
+                embs = embedder.encode(batch, show_progress_bar=False).tolist()
+                for j, (chunk, emb) in enumerate(zip(batch, embs)):
+                    idx = start + j
+                    vectors.append((
+                        f"{doc_id}__{idx}",
+                        emb,
+                        {"source": doc_id, "chunk": idx, "text": chunk}
+                    ))
+            # Upsert in batches of _UPSERT_BATCH
+            for start in range(0, len(vectors), self._UPSERT_BATCH):
+                self._index.upsert(vectors=vectors[start : start + self._UPSERT_BATCH])
             logging.info("Upserted %d chunks to Pinecone for document '%s'", len(chunks), doc_id)
         else:
             self._ensure_chroma()
-            ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
-            metadatas = [{"source": doc_id, "chunk": i} for i in range(len(chunks))]
-            self._collection.upsert(
-                ids=ids,
-                documents=chunks,
-                embeddings=embeddings,
-                metadatas=metadatas,
-            )
+            # Process in batches for ChromaDB too
+            for start in range(0, len(chunks), self._ENCODE_BATCH):
+                batch = chunks[start : start + self._ENCODE_BATCH]
+                embs = embedder.encode(batch, show_progress_bar=False).tolist()
+                ids = [f"{doc_id}__{start + j}" for j in range(len(batch))]
+                metadatas = [{"source": doc_id, "chunk": start + j} for j in range(len(batch))]
+                self._collection.upsert(
+                    ids=ids,
+                    documents=batch,
+                    embeddings=embs,
+                    metadatas=metadatas,
+                )
             logging.info("Upserted %d chunks to ChromaDB for document '%s'", len(chunks), doc_id)
 
     # ------------------------------------------------------------------
