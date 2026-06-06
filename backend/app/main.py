@@ -11,6 +11,7 @@ import threading
 import json
 import gc
 import queue
+import time
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -140,7 +141,12 @@ def _queue_worker():
 def _process_file(job_id: str, file_path: str, filename: str):
     """Extract text → chunk → vector-index. Fast path: no graph RAG during upload."""
     try:
+        start_time = time.perf_counter()
+
+        # 1. PDF/Text Extraction
+        ext_start = time.perf_counter()
         text = extract_text_from_file(file_path)
+        ext_time = time.perf_counter() - ext_start
 
         # Delete the uploaded file after extraction to save disk
         try:
@@ -152,12 +158,26 @@ def _process_file(job_id: str, file_path: str, filename: str):
             _set_job(job_id, "error", filename, "No text could be extracted from this file.")
             return
 
+        # 2. Chunking
+        chunk_start = time.perf_counter()
         chunks = [text[i : i + 500] for i in range(0, len(text), 500)]
         del text  # free the full text string immediately
+        chunk_time = time.perf_counter() - chunk_start
 
-        # Index into vector store (Pinecone or ChromaDB)
+        # 3. Vector indexing (Embedding + Pinecone/Chroma Upload)
+        index_start = time.perf_counter()
         vector_store.add_document(filename, chunks)
-        logging.info("Vector-indexed '%s' — %d chunks", filename, len(chunks))
+        index_time = time.perf_counter() - index_start
+
+        total_time = time.perf_counter() - start_time
+        logging.info(
+            "TIMING AUDIT - File: %s\n"
+            "  PDF Extraction: %.4f sec\n"
+            "  Chunking: %.4f sec\n"
+            "  Embedding & Vector Upload: %.4f sec\n"
+            "  Total Processing Time: %.4f sec",
+            filename, ext_time, chunk_time, index_time, total_time
+        )
 
         _set_job(job_id, "done", filename, f"Indexed {len(chunks)} chunks.")
     except Exception as exc:

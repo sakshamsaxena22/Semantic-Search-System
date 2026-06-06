@@ -279,7 +279,7 @@
     <div id="dropZone">
       <div class="dz-icon">☁️</div>
       <p><strong>Drag &amp; drop files here</strong> or click to browse</p>
-      <p style="margin-top:6px;font-size:.8rem;">PDF · DOCX · TXT · JPG · PNG (up to 75 files, 16 MB each)</p>
+      <p style="margin-top:6px;font-size:.8rem;">PDF · DOCX · TXT · JPG · PNG (max 32 MB each)</p>
     </div>
     <input type="file" id="fileInput" multiple />
 
@@ -352,7 +352,7 @@
   fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
 
   function handleFiles(files) {
-    selectedFiles = files.slice(0, 75);
+    selectedFiles = files;
     fileList.innerHTML = '';
     selectedFiles.forEach(f => {
       const chip = document.createElement('div');
