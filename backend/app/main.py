@@ -12,6 +12,9 @@ import json
 import gc
 import queue
 import time
+import traceback
+from dotenv import load_dotenv
+load_dotenv()
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -41,31 +44,50 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 
 # ── Shared state ─────────────────────────────────────────────────────────────────────────
+if os.environ.get("PINECONE_API_KEY") and os.environ.get("PINECONE_INDEX_NAME"):
+    logging.info("Startup check: Pinecone env vars DETECTED. VectorStore will use Pinecone.")
+else:
+    logging.warning("Startup check: Pinecone env vars MISSING. VectorStore will fallback to ChromaDB.")
+
 vector_store    = VectorStore()
 knowledge_graph = KnowledgeGraph()
 logging.info("App initialized: VectorStore + KnowledgeGraph ready.")
 
 # ── Persistent job tracking (survives worker restarts) ─────────────────────────
 _JOBS_FILE = os.path.join(UPLOAD_FOLDER, ".jobs.json")
-_jobs_lock = threading.Lock()
+_jobs_lock = threading.RLock()
 
 def _load_jobs() -> dict:
     """Load jobs from disk. Returns empty dict on any failure."""
-    try:
-        if os.path.isfile(_JOBS_FILE):
-            with open(_JOBS_FILE, "r") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+    with _jobs_lock:
+        try:
+            if os.path.isfile(_JOBS_FILE):
+                with open(_JOBS_FILE, "r") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
 
 def _save_jobs(jobs: dict):
     """Persist jobs dict to disk."""
-    try:
-        with open(_JOBS_FILE, "w") as f:
-            json.dump(jobs, f)
-    except Exception as e:
-        logging.error("Failed to persist jobs: %s", e)
+    with _jobs_lock:
+        try:
+            with open(_JOBS_FILE, "w") as f:
+                json.dump(jobs, f)
+        except Exception as e:
+            logging.error("Failed to persist jobs: %s", e)
+
+# Reset stuck jobs on startup
+with _jobs_lock:
+    _initial_jobs = _load_jobs()
+    _changed = False
+    for j_id, j_data in _initial_jobs.items():
+        if j_data.get("status") == "processing":
+            j_data["status"] = "error"
+            j_data["message"] = "Server restarted while processing. Please upload again."
+            _changed = True
+    if _changed:
+        _save_jobs(_initial_jobs)
 
 def _set_job(job_id: str, status: str, filename: str, message: str = ""):
     """Update a single job and persist to disk."""
@@ -126,16 +148,23 @@ def upload_doc():
 def _queue_worker():
     """Single background thread that processes files one at a time."""
     while True:
-        job_id, file_path, filename = _work_queue.get()
         try:
-            _process_file(job_id, file_path, filename)
-        except Exception as exc:
-            logging.error("Queue worker error for %s: %s", filename, exc, exc_info=True)
-            _set_job(job_id, "error", filename, str(exc))
-        finally:
-            # Free memory between files
-            gc.collect()
-            _work_queue.task_done()
+            job_id, file_path, filename = _work_queue.get()
+            try:
+                logging.info("[WORKER PROCESSING: %s]", filename)
+                _process_file(job_id, file_path, filename)
+                logging.info("[WORKER DONE: %s]", filename)
+            except Exception as exc:
+                logging.error("[WORKER FAILED: %s, %s]", filename, str(exc))
+                logging.error("Queue worker error for %s:\n%s", filename, traceback.format_exc())
+                _set_job(job_id, "error", filename, str(exc))
+            finally:
+                # Free memory between files
+                gc.collect()
+                _work_queue.task_done()
+        except Exception as outer_exc:
+            logging.error("Worker loop critical error:\n%s", traceback.format_exc())
+            time.sleep(1)
 
 
 def _process_file(job_id: str, file_path: str, filename: str):
@@ -188,7 +217,37 @@ def _process_file(job_id: str, file_path: str, filename: str):
 # Start the single sequential worker thread
 _worker_thread = threading.Thread(target=_queue_worker, daemon=True)
 _worker_thread.start()
+logging.info("[WORKER STARTED]")
 
+def _worker_watchdog():
+    global _worker_thread
+    while True:
+        time.sleep(30)
+        if not _worker_thread.is_alive():
+            logging.error("Watchdog: Worker thread died! Respawning...")
+            _worker_thread = threading.Thread(target=_queue_worker, daemon=True)
+            _worker_thread.start()
+            logging.info("[WORKER STARTED] (Respawned)")
+
+_watchdog_thread = threading.Thread(target=_worker_watchdog, daemon=True)
+_watchdog_thread.start()
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    jobs = _load_jobs()
+    total = len(jobs)
+    done = sum(1 for j in jobs.values() if j.get("status") == "done")
+    failed = sum(1 for j in jobs.values() if j.get("status") == "error")
+    processing = sum(1 for j in jobs.values() if j.get("status") == "processing")
+    return jsonify({
+        "status": "ok",
+        "worker_alive": _worker_thread.is_alive(),
+        "queue_size": _work_queue.qsize(),
+        "jobs_total": total,
+        "jobs_done": done,
+        "jobs_failed": failed,
+        "jobs_processing": processing
+    })
 
 @app.route("/status/<job_id>", methods=["GET"])
 def job_status(job_id: str):

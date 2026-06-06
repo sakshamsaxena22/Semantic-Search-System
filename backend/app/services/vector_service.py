@@ -19,10 +19,13 @@ def _get_embedder():
     """Return the SentenceTransformer model, loading it on first use."""
     global _embedder
     if _embedder is None:
-        from sentence_transformers import SentenceTransformer
-        logging.info("Loading SentenceTransformer model '%s'...", _EMBED_MODEL)
-        _embedder = SentenceTransformer(_EMBED_MODEL)
-        logging.info("SentenceTransformer model loaded.")
+        try:
+            from sentence_transformers import SentenceTransformer
+            logging.info("Loading SentenceTransformer model '%s'...", _EMBED_MODEL)
+            _embedder = SentenceTransformer(_EMBED_MODEL)
+            logging.info("SentenceTransformer model loaded.")
+        except Exception as e:
+            raise RuntimeError(f"SentenceTransformer model load failed: {e}")
     return _embedder
 
 
@@ -114,8 +117,16 @@ class VectorStore:
                         {"source": doc_id, "chunk": idx, "text": chunk}
                     ))
                 # Upsert this batch immediately, then discard
-                self._index.upsert(vectors=vectors)
+                try:
+                    self._index.upsert(vectors=vectors)
+                except Exception as e:
+                    logging.error("Pinecone upsert failed at batch %d: %s", start, e)
+                    raise
                 total += len(vectors)
+                del vectors
+                del embs
+                import gc
+                gc.collect()
             logging.info("Upserted %d chunks to Pinecone for document '%s'", total, doc_id)
         else:
             self._ensure_chroma()
@@ -125,12 +136,21 @@ class VectorStore:
                 embs = embedder.encode(batch, show_progress_bar=False).tolist()
                 ids = [f"{doc_id}__{start + j}" for j in range(len(batch))]
                 metadatas = [{"source": doc_id, "chunk": start + j} for j in range(len(batch))]
-                self._collection.upsert(
-                    ids=ids,
-                    documents=batch,
-                    embeddings=embs,
-                    metadatas=metadatas,
-                )
+                try:
+                    self._collection.upsert(
+                        ids=ids,
+                        documents=batch,
+                        embeddings=embs,
+                        metadatas=metadatas,
+                    )
+                except Exception as e:
+                    logging.error("ChromaDB upsert failed at batch %d: %s", start, e)
+                    raise
+                del embs
+                del ids
+                del metadatas
+                import gc
+                gc.collect()
             logging.info("Upserted %d chunks to ChromaDB for document '%s'", len(chunks), doc_id)
 
     # ------------------------------------------------------------------

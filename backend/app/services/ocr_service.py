@@ -86,14 +86,24 @@ def extract_text_from_file(file_path: str) -> str:
 
     # ── PDF ───────────────────────────────────────────────────────────────────
     if ext == ".pdf":
-        doc = fitz.open(file_path)
-        all_texts = []
-        for page in doc:
-            text = page.get_text().strip()
-            if text:
-                all_texts.append(text)
-        doc.close()
-        return "\n\n".join(all_texts)
+        try:
+            doc = fitz.open(file_path)
+            all_texts = []
+            for page in doc:
+                try:
+                    text = page.get_text().strip()
+                    if text:
+                        all_texts.append(text)
+                except Exception as e:
+                    logging.warning("Failed to extract text from page in %s: %s", file_path, e)
+            doc.close()
+            final_text = "\n\n".join(all_texts)
+            if not final_text.strip():
+                return "EXTRACTION_EMPTY"
+            return final_text
+        except Exception as e:
+            logging.error("Failed to parse PDF %s: %s", file_path, e)
+            return "EXTRACTION_EMPTY"
 
     # ── Standalone image files ────────────────────────────────────────────────
     elif ext in (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".heic"):

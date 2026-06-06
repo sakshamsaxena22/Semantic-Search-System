@@ -250,54 +250,58 @@ class KnowledgeGraph:
         -------
         (augmented_chunks, augmented_metadatas)
         """
-        nlp = _get_nlp()
-        if nlp is None or self._G.number_of_nodes() == 0:
+        try:
+            nlp = _get_nlp()
+            if nlp is None or self._G.number_of_nodes() == 0:
+                return base_chunks, base_metadatas
+
+            # Extract entities from the query
+            query_entities = [ent.text.strip().lower() for ent in nlp(query).ents
+                              if len(ent.text.strip()) > 1]
+            logging.info("Graph RAG: query entities → %s", query_entities)
+
+            # Walk GRAPH_HOP_DEPTH hops to find related entity nodes
+            related_entity_nodes: set[str] = set()
+            for qe in query_entities:
+                if self._G.has_node(qe):
+                    # BFS up to GRAPH_HOP_DEPTH hops
+                    visited = {qe}
+                    frontier = {qe}
+                    for _ in range(GRAPH_HOP_DEPTH):
+                        next_frontier = set()
+                        for node in frontier:
+                            neighbors = set(self._G.successors(node)) | set(self._G.predecessors(node))
+                            next_frontier |= neighbors - visited
+                        visited |= next_frontier
+                        frontier = next_frontier
+                    related_entity_nodes |= visited - {qe}
+
+            # Collect chunk keys from those nodes
+            graph_chunk_keys: set[str] = set()
+            for node in related_entity_nodes:
+                graph_chunk_keys |= self._G.nodes[node].get("chunk_ids", set())
+
+            # Retrieve chunk texts for found keys, deduplicated against base_chunks
+            extra_chunks: list[str] = []
+            extra_metas: list[dict] = []
+            for key in sorted(graph_chunk_keys)[:10]:   # cap at 10 extra chunks
+                text = self._chunk_registry.get(key, "")
+                if text and text not in base_chunks:
+                    parts = key.split("__")
+                    source = parts[0] if parts else key
+                    chunk_idx = int(parts[1]) if len(parts) > 1 else 0
+                    extra_chunks.append(text)
+                    extra_metas.append({"source": source, "chunk": chunk_idx, "via": "graph"})
+
+            logging.info(
+                "Graph RAG: %d base chunks + %d graph-expanded chunks (from %d related entities)",
+                len(base_chunks), len(extra_chunks), len(related_entity_nodes)
+            )
+
+            return base_chunks + extra_chunks, base_metadatas + extra_metas
+        except Exception as e:
+            logging.error("Graph RAG context expansion failed: %s", e)
             return base_chunks, base_metadatas
-
-        # Extract entities from the query
-        query_entities = [ent.text.strip().lower() for ent in nlp(query).ents
-                          if len(ent.text.strip()) > 1]
-        logging.info("Graph RAG: query entities → %s", query_entities)
-
-        # Walk GRAPH_HOP_DEPTH hops to find related entity nodes
-        related_entity_nodes: set[str] = set()
-        for qe in query_entities:
-            if self._G.has_node(qe):
-                # BFS up to GRAPH_HOP_DEPTH hops
-                visited = {qe}
-                frontier = {qe}
-                for _ in range(GRAPH_HOP_DEPTH):
-                    next_frontier = set()
-                    for node in frontier:
-                        neighbors = set(self._G.successors(node)) | set(self._G.predecessors(node))
-                        next_frontier |= neighbors - visited
-                    visited |= next_frontier
-                    frontier = next_frontier
-                related_entity_nodes |= visited - {qe}
-
-        # Collect chunk keys from those nodes
-        graph_chunk_keys: set[str] = set()
-        for node in related_entity_nodes:
-            graph_chunk_keys |= self._G.nodes[node].get("chunk_ids", set())
-
-        # Retrieve chunk texts for found keys, deduplicated against base_chunks
-        extra_chunks: list[str] = []
-        extra_metas: list[dict] = []
-        for key in sorted(graph_chunk_keys)[:10]:   # cap at 10 extra chunks
-            text = self._chunk_registry.get(key, "")
-            if text and text not in base_chunks:
-                parts = key.split("__")
-                source = parts[0] if parts else key
-                chunk_idx = int(parts[1]) if len(parts) > 1 else 0
-                extra_chunks.append(text)
-                extra_metas.append({"source": source, "chunk": chunk_idx, "via": "graph"})
-
-        logging.info(
-            "Graph RAG: %d base chunks + %d graph-expanded chunks (from %d related entities)",
-            len(base_chunks), len(extra_chunks), len(related_entity_nodes)
-        )
-
-        return base_chunks + extra_chunks, base_metadatas + extra_metas
 
     # ------------------------------------------------------------------
     # Utility
