@@ -198,30 +198,34 @@ The original server spawned a **new thread per uploaded file**. With 75+ files, 
 - RAM spikes causing OOM-kills on Render
 - In-memory job tracking (`_jobs` dict) lost on worker restart → "Unknown job ID" errors
 
-### Three fixes implemented:
+### Performance & Pipeline Fixes Implemented:
 
 | Fix | File | Description |
 |-----|------|-------------|
-| **Sequential Job Queue** | `main.py` | Replaced per-file `threading.Thread` with a `queue.Queue` + single daemon worker thread. Files are processed **one at a time**, keeping RAM stable at ~350 MB. |
+| **Sequential Job Queue** | `main.py` | Replaced per-file `threading.Thread` with a `queue.Queue` + single daemon worker thread. Files are processed **one at a time**, keeping RAM stable at ~300 MB. |
 | **Persistent Job Store** | `main.py` | Job status is now written to `.jobs.json` on disk (inside `backend/data/`). If the worker restarts mid-batch, the frontend can still poll all previously completed jobs. Auto-prunes to last 200 jobs. |
-| **Batched Encoding** | `vector_service.py` | Instead of `embedder.encode(all_chunks)` in one call, chunks are encoded in **batches of 32**. Pinecone upserts are batched in **groups of 100**. This caps peak memory per document. |
-| **GC between files** | `main.py` | `gc.collect()` runs after each file finishes, freeing temporary numpy arrays and text buffers before the next file starts. |
+| **Bypass Graph RAG on Ingestion** | `main.py` | Removed the slow Graph RAG creation process from the upload route. Since Graph RAG requires calling Groq's LLM API for each chunk, moving it out of ingestion avoids API rate limits and OOM risks, making uploads fast and stable. |
+| **Batched & Streamed Encoding** | `vector_service.py` | Instead of encoding all chunks at once, they are encoded in **batches of 32**. Furthermore, vectors are immediately upserted to Pinecone in batches and garbage-collected, preventing large vector arrays from consuming RAM. |
+| **Lower OCR DPI** | `ocr_service.py` | Reduced rendering DPI from 200 to **150**. This reduces page image sizes by ~44%, dramatically lowering memory usage per scanned page and speeding up Tesseract execution. |
+| **Unbounded Memory Protection** | `graph_service.py`, `groq_client.py` | Added registry capping (5,000 items maximum) to the knowledge graph and response caching caps (200 items maximum) to the Groq API cache to prevent long-running memory leaks. |
+| **GC between files** | `main.py` | Runs `gc.collect()` after each file finishes processing, freeing up text buffers and temporary structures. |
 
 ### Upload flow for 75 files:
 ```
-Frontend uploads 75 files sequentially (await per file)
+Frontend uploads 75 files rapidly (fire-and-forget uploads)
   → Server accepts each instantly (HTTP 202)
   → Job ID saved to .jobs.json on disk
   → File enqueued in queue.Queue
 
 Background worker thread:
-  → Dequeue file 1 → extract → embed (32 at a time) → upsert → gc.collect()
-  → Dequeue file 2 → extract → embed (32 at a time) → upsert → gc.collect()
-  → ... (stable ~350 MB RAM throughout)
+  → Dequeue file 1 → extract text → embed (32 at a time) → upsert to Pinecone → gc.collect()
+  → Dequeue file 2 → extract text → embed (32 at a time) → upsert to Pinecone → gc.collect()
+  → ... (stable ~300 MB RAM throughout, completing each file in seconds)
 
-Frontend polls /status/<job_id>:
+Frontend polls /status/<job_id> for all jobs in parallel:
+  → Displays real-time job-by-job status dashboard (⏳, 🔄, ✅, ❌)
   → Always gets an answer (jobs persisted to disk)
-  → No more "Unknown job ID" on worker restart
+  → Survives background worker/server restarts
 ```
 
 ---
@@ -321,6 +325,7 @@ When deployed on Render, the frontend is served by Flask at the `/` route, so `B
 
 | Commit | Description |
 |--------|-------------|
+| `914a532` | perf: Remove graph RAG from upload, fire-and-forget UI, batched encoding, lower OCR DPI |
 | `2d52571` | feat: Sequential job queue + persistent job store + batched encoding for 75+ file uploads |
 | `78959a5` | docs: Update summary.md with complete project changelog and deployment architecture |
 | `8e4cb09` | fix: Rename `pinecone-client` to `pinecone` (package renamed, old name crashes on import) |

@@ -124,12 +124,14 @@ Right now, your frontend interface doesn't know where the backend API brain is r
 
 ## Step 6: Test Your App!
 
-1. Open your Vercel website link.
-2. Click **Drag & drop files here** and select a PDF or Text file.
+1. Open your Vercel website link (or `http://localhost:5000` if running locally).
+2. Click **Drag & drop files here** or browse to select your files (you can upload multiple files, up to 75 at once).
 3. Click the blue **Upload Files** button. 
-   * *The status line will show "Uploading...", then "Extracting text...". Once complete, you will see a green checkmark indicating successful ingestion.*
-4. Type a question about the file in the **Ask a Question** box and click **Search**.
-5. The AI will write the response answer and list the source document references below!
+   * *A progress bar will fill up as files are uploaded in rapid succession.*
+   * *Below the upload card, a **Live status dashboard** will appear showing a list of your files. Each file displays its current status (⏳ Queued → 🔄 Processing → ✅ Done / ❌ Failed).*
+   * *As the backend processes files sequentially in a background queue, you will see statuses update dynamically. Text PDFs take 5–15 seconds; scanned or image-based PDFs take 20–60 seconds.*
+4. Type a question about the uploaded files in the **Ask a Question** box and click **Search**.
+5. The AI will write the response answer, list the source document references (citations) below, and indicate whether a Knowledge Graph-expanded context walk was performed!
 
 ---
 

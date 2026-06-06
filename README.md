@@ -67,90 +67,71 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Frontend (Web UI)                         │
-│           HTML5 + JavaScript (upload.html)                  │
+│           HTML5 + JavaScript (index.html)                   │
 └──────────────────────┬──────────────────────────────────────┘
-                       │ HTTP Requests
+                       │ HTTP Requests (Parallel Uploads)
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 Flask Application Layer                      │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  main.py - Application Bootstrap & Route Handlers    │ │
-│  │  - GET  /           → Serve upload.html              │ │
-│  │  - POST /upload     → Handle file uploads             │ │
-│  │  - POST /query      → Process semantic searches       │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  routes.py - Blueprint API Routes                     │ │
-│  │  - POST /api/query  → Direct LLM queries              │ │
-│  └────────────────────────────────────────────────────────┘ │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-         ┌─────────────┼─────────────┐
-         ▼             ▼             ▼
-    ┌─────────┐  ┌──────────┐  ┌──────────┐
-    │   OCR   │  │  Vector  │  │  Groq    │
-    │ Service │  │  Service │  │  Client  │
-    └─────────┘  └──────────┘  └──────────┘
-         │             │             │
-         ▼             ▼             ▼
-    ┌─────────┐  ┌──────────┐  ┌──────────┐
-    │ PyMuPDF │  │In-Memory │  │ Groq API │
-    │Tesseract│  │Vector DB │  │(LLaMA-3) │
-    │python-  │  │          │  │          │
-    │docx     │  │          │  │          │
-    └─────────┘  └──────────┘  └──────────┘
+│                 Flask Application Layer (main.py)           │
+│  - GET  /            → Serve index.html                     │
+│  - POST /upload      → Enqueue job & return 202             │
+│  - GET  /status/<id> → Poll background job state            │
+│  - POST /query       → Hybrid Vector + Graph Search         │
+│                                                             │
+│  ┌──────────────────┐               ┌────────────────────┐  │
+│  │  Work Queue      │               │  Persistent Jobs   │  │
+│  │  (queue.Queue)   │               │  (.jobs.json)      │  │
+│  └────────┬─────────┘               └────────────────────┘  │
+│           │ (Sequential Processing Thread)                  │
+│           ▼                                                 │
+│  ┌──────────────────┐                                       │
+│  │  OCR Service     │ (150 DPI Tesseract / PyMuPDF)         │
+│  └────────┬─────────┘                                       │
+│           │ (Deletes raw file after extraction)             │
+│           ▼                                                 │
+│  ┌──────────────────┐                                       │
+│  │  Vector Service  │ (Streamed Encoding, 32 Chunk Batches) │
+│  └──────────────────┘                                       │
+└───────────────────┬─────────────────────────────────────────┘
+                    │
+      ┌─────────────┴─────────────┐
+      ▼                           ▼
+┌───────────┐               ┌───────────┐
+│ Pinecone  │               │ Groq LLM  │
+│ Vector DB │               │ API Gateway│
+│ (ChromaDB │               │ (Llama 3  │
+│ Fallback) │               │ Caching)  │
+└───────────┘               └───────────┘
 ```
 
 ### Component Breakdown:
 
 #### 1. **Frontend Layer**
-- **upload.html**: Single-page application
-  - File upload functionality (multi-file support, up to 75 files)
-  - Query input interface
-  - Response display with citations
+- **index.html**: Decoupled browser client UI.
+  - Fast, parallel file uploads (up to 75 files).
+  - Real-time job status dashboard showing ⏳ Queued, 🔄 Processing, ✅ Done, and ❌ Failed status icons.
+  - Multi-file querying and citation links.
 
 #### 2. **Application Layer (Flask)**
-- **main.py**: Core Flask application
-  - Initializes Flask app with CORS support
-  - Manages upload folder and file size limits (16MB max)
-  - Coordinates between services
-  - Error handling and logging
+- **main.py**: Core Flask application.
+  - Manages background sequential queue (`queue.Queue`) and persistent job store (`.jobs.json`).
+  - Implements API endpoints with CORS support.
+  - Cleans up uploaded raw files immediately after extraction to save server disk space.
 
-- **routes.py**: Blueprint for additional API routes
-  - RESTful API endpoint for direct LLM queries
+- **routes.py**: Blueprint for additional API endpoints.
 
-- **config.py**: Configuration management
-  - Loads environment variables (GROQ_API_KEY)
-  - Data directory configuration
+- **config.py**: Environment variable configuration.
 
 #### 3. **Service Layer**
-
-**OCR Service** (`ocr_service.py`)
-- Multi-format text extraction
-- File type detection via extension
-- Error handling for unsupported formats
-
-**Vector Service** (`vector_service.py`)
-- In-memory vector database (demo implementation)
-- Document chunk storage with metadata
-- Query interface for retrieving relevant chunks
-- Note: Production use should integrate ChromaDB or similar
-
-**Groq Client** (`groq_client.py`)
-- HTTP communication with Groq API
-- LLaMA-3 8B model integration
-- Authentication via API key
-- Error handling for API failures
-
-**Groq Service** (`groq_service.py`)
-- Wrapper around Groq client
-- Text chunking for large prompts
-- Batch processing capability
+- **OCR Service** (`ocr_service.py`): Multi-format text extraction rendering scanned PDF pages at 150 DPI to optimize memory footprint and speed.
+- **Vector Service** (`vector_service.py`): Primary Pinecone client with local ChromaDB SQLite fallback. Uses 32-chunk batch streamed encoding to prevent memory spikes.
+- **Groq Client** (`groq_client.py`): Groq API gateway with backoff strategy, response caching (max 200 items), and retry capability.
+- **Graph Service** (`graph_service.py`): NetworkX graph expansion engine walking 1-hop relationships from `knowledge_graph.pkl` at query time.
 
 #### 4. **Storage Layer**
-- **backend/data/**: Uploaded files storage
-- **In-Memory Vector Store**: Document chunks and metadata
+- **Pinecone Vector Database**: Cloud vector index (384 dimensions).
+- **ChromaDB**: Local SQLite vector database (fallback when Pinecone credentials are absent).
+- **Disk Persistence**: `.jobs.json` (status tracker) and `knowledge_graph.pkl` (relationship graph).
 
 ---
 
@@ -198,20 +179,21 @@ Semantic-Search-System/
 
 ### 1. **Application Entry Point**
 - **File**: `backend/app/main.py`
-- **Trigger**: `python -m backend.app.main` or `python backend/app/main.py`
+- **Trigger**: `python backend/app/main.py` or `python -m backend.app.main`
 - **Port**: Default Flask port 5000
 - **Function**: 
   - Initializes Flask application
-  - Loads configuration and services
-  - Starts the web server
+  - Launches background sequential job queue daemon thread
+  - Restores existing jobs from disk
+  - Serves static front-end and APIs
 
 ### 2. **Frontend Entry Point**
 - **URL**: `http://localhost:5000/`
-- **File Served**: `backend/app/templates/upload.html`
+- **File Served**: `frontend/index.html` (via Flask root route)
 - **Capabilities**:
-  - Upload files
-  - Query documents
-  - View AI-generated answers
+  - Parallel fire-and-forget uploads
+  - Real-time status polling for queued jobs
+  - Search query submission and Graph RAG citation viewer
 
 ---
 
@@ -221,15 +203,17 @@ Semantic-Search-System/
 
 | Method | Endpoint | Description | Request | Response |
 |--------|----------|-------------|---------|----------|
-| GET | `/` | Serve upload UI | - | HTML page |
-| POST | `/upload` | Upload document | File (multipart) | `{status, file}` |
-| POST | `/query` | Query documents | `{query: string}` | `{answer, citations}` |
+| GET | `/` | Serve index.html | - | HTML page |
+| POST | `/upload` | Enqueue document | File (multipart) | `{"status": "processing", "job_id": "...", "file": "..."}` |
+| GET | `/status/<job_id>` | Poll job progress | - | `{"status": "done"\|"processing"\|"error", "file": "...", "message": "..."}` |
+| POST | `/query` | Query documents | `{"query": string}` | `{"answer", "citations", "graph_rag", "graph_stats"}` |
+| GET | `/graph/stats` | Retrieve Graph status | - | `{"nodes", "edges", "chunks_indexed"}` |
 
 ### API Blueprint Routes
 
 | Method | Endpoint | Description | Request | Response |
 |--------|----------|-------------|---------|----------|
-| POST | `/api/query` | Direct LLM query | `{query: string}` | `{answer: string}` |
+| POST | `/api/query` | Direct LLM query | `{"query": string}` | `{"answer": string}` |
 
 ### Request/Response Examples
 
@@ -238,11 +222,26 @@ Semantic-Search-System/
 curl -X POST -F "file=@document.pdf" http://localhost:5000/upload
 ```
 
+Response (HTTP 202):
+```json
+{
+  "status": "processing",
+  "job_id": "8b9ff6a2-11c0-432d-8ab1-2f31a293f9c2",
+  "file": "document.pdf"
+}
+```
+
+**Check Upload/Processing Status**
+```bash
+curl http://localhost:5000/status/8b9ff6a2-11c0-432d-8ab1-2f31a293f9c2
+```
+
 Response:
 ```json
 {
-  "status": "success",
-  "file": "document.pdf"
+  "status": "done",
+  "file": "document.pdf",
+  "message": "Indexed 15 chunks."
 }
 ```
 
@@ -257,7 +256,9 @@ Response:
 ```json
 {
   "answer": "The main topic is...",
-  "citations": [{"source": "document.pdf", "chunk": 0}]
+  "citations": [{"source": "document.pdf", "chunk": 0}],
+  "graph_rag": true,
+  "graph_stats": {"nodes": 12, "edges": 25, "chunks_indexed": 15}
 }
 ```
 
@@ -267,10 +268,9 @@ Response:
 
 ### Prerequisites
 - Python 3.10+
-- pip package manager
 - Tesseract OCR (for image text extraction)
 - Poppler utilities (for PDF processing)
-- Groq API key
+- Groq API key (and optionally Pinecone API key & Index Name)
 
 ### Installation Steps
 
@@ -283,12 +283,18 @@ cd Semantic-Search-System
 2. **Create Virtual Environment**
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# On Windows:
+.\venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
 ```
 
 3. **Install Dependencies**
+Install PyTorch CPU-only first to prevent CUDA package bloat (~1.5GB savings):
 ```bash
+pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 
 4. **Install System Dependencies**
@@ -308,13 +314,12 @@ brew install poppler tesseract
 - Download Poppler: http://blog.alivate.com.au/poppler-windows/
 
 5. **Configure Environment Variables**
-```bash
-cp .env.example .env  # If available, or create .env
-# Add your Groq API key
-echo "GROQ_API_KEY=your_api_key_here" > .env
+Create a `.env` file in the root directory:
+```env
+GROQ_API_KEY=your_groq_key_here
+PINECONE_API_KEY=your_pinecone_key_here
+PINECONE_INDEX_NAME=semantic-search-index
 ```
-
-Get your Groq API key from: https://console.groq.com/
 
 6. **Run Application**
 ```bash
@@ -322,7 +327,7 @@ python backend/app/main.py
 ```
 
 7. **Access Application**
-Open browser and navigate to: `http://localhost:5000`
+Open your browser and navigate to: `http://localhost:5000`
 
 ---
 
@@ -345,39 +350,54 @@ Open browser and navigate to: `http://localhost:5000`
 
 ### Programmatic API Usage
 
-**Python Example:**
+**Python Example (with status polling):**
 ```python
+import time
 import requests
 
-# Upload document
+# 1. Start Upload
 with open('document.pdf', 'rb') as f:
-    files = {'file': f}
-    response = requests.post('http://localhost:5000/upload', files=files)
-    print(response.json())
+    res = requests.post('http://localhost:5000/upload', files={'file': f})
+    job = res.json()
+    job_id = job['job_id']
+    print(f"Uploaded! Job ID: {job_id}")
 
-# Query document
+# 2. Poll Status
+while True:
+    res = requests.get(f'http://localhost:5000/status/{job_id}')
+    status_data = res.json()
+    print(f"Status: {status_data['status']} - {status_data.get('message', '')}")
+    if status_data['status'] in ['done', 'error']:
+        break
+    time.sleep(2)
+
+# 3. Query the Indexed Content
 query_data = {'query': 'What is the summary?'}
-response = requests.post('http://localhost:5000/query', json=query_data)
-print(response.json())
+res = requests.post('http://localhost:5000/query', json=query_data)
+print("Answer:", res.json()['answer'])
 ```
 
-**JavaScript Example:**
+**JavaScript Example (with status polling):**
 ```javascript
-// Upload file
+// 1. Upload file
 const formData = new FormData();
 formData.append('file', fileInput.files[0]);
 
-fetch('/upload', {
-  method: 'POST',
-  body: formData
-}).then(res => res.json()).then(data => console.log(data));
+const uploadRes = await fetch('/upload', { method: 'POST', body: formData });
+const uploadData = await uploadRes.json();
+const jobId = uploadData.job_id;
 
-// Query documents
-fetch('/query', {
-  method: 'POST',
-  headers: {'Content-Type': 'application/json'},
-  body: JSON.stringify({query: 'Your question here'})
-}).then(res => res.json()).then(data => console.log(data.answer));
+// 2. Poll Status
+const pollInterval = setInterval(async () => {
+  const statusRes = await fetch(`/status/${jobId}`);
+  const statusData = await statusRes.json();
+  console.log("Status:", statusData.status);
+  
+  if (statusData.status === 'done' || statusData.status === 'error') {
+    clearInterval(pollInterval);
+    console.log("Finished:", statusData.message);
+  }
+}, 3000);
 ```
 
 ---
@@ -424,14 +444,17 @@ fetch('/query', {
 ## 🐳 Docker Deployment
 
 ### Build Docker Image
+Run from the project root directory:
 ```bash
-docker build -t semantic-search:latest ./backend
+docker build -t semantic-search:latest .
 ```
 
 ### Run Docker Container
 ```bash
 docker run -p 5000:5000 \
-  -e GROQ_API_KEY=your_api_key \
+  -e GROQ_API_KEY=your_groq_key \
+  -e PINECONE_API_KEY=your_pinecone_key \
+  -e PINECONE_INDEX_NAME=semantic-search-index \
   -v $(pwd)/backend/data:/app/backend/data \
   semantic-search:latest
 ```
@@ -440,21 +463,18 @@ docker run -p 5000:5000 \
 
 ## 🔐 Security Considerations
 
-- **API Key Management**: Store GROQ_API_KEY securely in environment variables
-- **File Upload Limits**: Default 16MB max file size
-- **CORS Configuration**: Configure allowed origins in production
-- **Input Validation**: All file types and queries are validated
-- **Error Handling**: Sensitive information is not exposed in error messages
+- **API Key Management**: Store GROQ_API_KEY and PINECONE_API_KEY securely in environment variables.
+- **File Upload Limits**: Managed on both backend (max 32MB) and frontend.
+- **CORS Configuration**: CORS support is configured to allow decoupled frontend communication.
+- **Input Validation**: File uploads and search queries are strictly validated.
 
 ---
 
 ## 📝 Notes
 
-- The current Vector Store is in-memory (demo implementation)
-- For production, integrate ChromaDB or Pinecone for persistent storage
-- Chunking strategy (500 chars) can be optimized based on content type
-- LLM model can be switched in groq_client.py
-- Consider implementing authentication for production use
+- **Vector Database**: Connects to Pinecone for persistent cloud storage. Falls back automatically to local ChromaDB SQLite storage if Pinecone keys are missing.
+- **Graph RAG Ingestion**: Graph construction is bypassed during document ingestion to preserve memory and speed up uploading. At query time, entity connections are walked using pre-loaded relationships if available.
+- **Memory Optimization**: Employs lazy model loading, CPU-only PyTorch, 150 DPI OCR page rendering, and 32-chunk batch streaming to operate smoothly on low-RAM environments (e.g. Render's 512MB free tier).
 
 ---
 
