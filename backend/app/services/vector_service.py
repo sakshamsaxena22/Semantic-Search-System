@@ -6,6 +6,10 @@ import logging
 import os
 from pathlib import Path
 
+# Force offline mode for Hugging Face hub / Transformers to speed up local server startup in sandboxed environments
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
