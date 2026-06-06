@@ -214,23 +214,33 @@ def _process_file(job_id: str, file_path: str, filename: str):
         _set_job(job_id, "error", filename, str(exc))
 
 
-# Start the single sequential worker thread
-_worker_thread = threading.Thread(target=_queue_worker, daemon=True)
-_worker_thread.start()
-logging.info("[WORKER STARTED]")
+_threads_started = False
+_threads_lock = threading.Lock()
+_worker_thread = None
+_watchdog_thread = None
+
+@app.before_request
+def start_threads():
+    global _threads_started, _worker_thread, _watchdog_thread
+    if not _threads_started:
+        with _threads_lock:
+            if not _threads_started:
+                _worker_thread = threading.Thread(target=_queue_worker, daemon=True)
+                _worker_thread.start()
+                _watchdog_thread = threading.Thread(target=_worker_watchdog, daemon=True)
+                _watchdog_thread.start()
+                _threads_started = True
+                logging.info("[WORKER & WATCHDOG STARTED] in process %s", os.getpid())
 
 def _worker_watchdog():
     global _worker_thread
     while True:
         time.sleep(30)
-        if not _worker_thread.is_alive():
+        if _worker_thread and not _worker_thread.is_alive():
             logging.error("Watchdog: Worker thread died! Respawning...")
             _worker_thread = threading.Thread(target=_queue_worker, daemon=True)
             _worker_thread.start()
             logging.info("[WORKER STARTED] (Respawned)")
-
-_watchdog_thread = threading.Thread(target=_worker_watchdog, daemon=True)
-_watchdog_thread.start()
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -241,7 +251,7 @@ def health_check():
     processing = sum(1 for j in jobs.values() if j.get("status") == "processing")
     return jsonify({
         "status": "ok",
-        "worker_alive": _worker_thread.is_alive(),
+        "worker_alive": _worker_thread.is_alive() if _worker_thread else False,
         "queue_size": _work_queue.qsize(),
         "jobs_total": total,
         "jobs_done": done,
