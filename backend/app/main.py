@@ -1,8 +1,10 @@
 """
 Main application file for the Semantic Search System.
-Run from the project root: python -m flask --app backend.app.main run
+Run from the project root: python -m backend.app.main
+Or directly:               python backend/app/main.py
 """
 import os
+import sys
 import uuid
 import logging
 import threading
@@ -10,13 +12,20 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
+# ── Ensure the project root is on sys.path so imports work whether the app
+#    is launched as a module or as a plain script. ──────────────────────────────
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 from backend.app.services.ocr_service import extract_text_from_file
 from backend.app.services.vector_service import VectorStore
 from backend.app.services.groq_client import groq_call_llm
+from backend.app.services.graph_service import KnowledgeGraph
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR     = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-APP_DIR      = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR      = _ROOT
+APP_DIR       = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "backend", "data")
 
 # ── App setup ──────────────────────────────────────────────────────────────────
@@ -28,7 +37,8 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 
 # ── Shared state ───────────────────────────────────────────────────────────────
-vector_store = VectorStore()
+vector_store   = VectorStore()
+knowledge_graph = KnowledgeGraph()
 
 # job_id → {"status": "processing"|"done"|"error", "file": str, "message": str}
 _jobs: dict[str, dict] = {}
@@ -77,7 +87,7 @@ def upload_doc():
 
 
 def _process_file(job_id: str, file_path: str, filename: str):
-    """Background worker: extract text → chunk → index into ChromaDB."""
+    """Background worker: extract text → chunk → vector-index → graph-index."""
     try:
         text = extract_text_from_file(file_path)
         if not text or not text.strip():
@@ -90,8 +100,17 @@ def _process_file(job_id: str, file_path: str, filename: str):
             return
 
         chunks = [text[i : i + 500] for i in range(0, len(text), 500)]
+
+        # Step 1: index into ChromaDB vector store
         vector_store.add_document(filename, chunks)
-        logging.info("Indexed '%s' — %d chunks", filename, len(chunks))
+        logging.info("Vector-indexed '%s' — %d chunks", filename, len(chunks))
+
+        # Step 2: index into knowledge graph (hybrid spaCy + selective Groq)
+        try:
+            knowledge_graph.add_document(filename, chunks, groq_fn=groq_call_llm)
+        except Exception as graph_exc:
+            # Graph indexing failure is non-fatal — vector search still works
+            logging.warning("Graph indexing failed for '%s': %s", filename, graph_exc)
 
         with _jobs_lock:
             _jobs[job_id] = {
@@ -121,8 +140,8 @@ def job_status(job_id: str):
 @app.route("/query", methods=["POST"])
 def query_doc():
     data = request.get_json()
-    if not data or "query" not in data:
-        return jsonify({"status": "error", "message": "Missing 'query' in request body"}), 400
+    if not data or not data.get("query") or not data["query"].strip():
+        return jsonify({"status": "error", "message": "Missing or empty 'query' in request body"}), 400
 
     query = data["query"]
     try:
@@ -133,15 +152,28 @@ def query_doc():
         if not documents or not documents[0]:
             return jsonify({"status": "error", "message": "No documents found. Upload documents first."}), 404
 
-        top_chunks = documents[0][:5]
-        top_meta   = metadatas[0][:5] if metadatas and metadatas[0] else []
-        context    = "\n\n".join(top_chunks)
+        base_chunks = documents[0][:5]
+        base_metas  = metadatas[0][:5] if metadatas and metadatas[0] else []
+
+        # ── Graph RAG: expand context via knowledge graph ──────────────────────
+        augmented_chunks, augmented_metas = knowledge_graph.expand_query_context(
+            query, base_chunks, base_metas
+        )
+
+        # Cap total context to avoid token overflows
+        final_chunks = augmented_chunks[:8]
+        final_metas  = augmented_metas[:8]
+
+        context = "\n\n".join(final_chunks)
+        graph_used = len(augmented_chunks) > len(base_chunks)
         prompt = (
-            "You are a helpful assistant. Use the following document excerpts to answer the question.\n\n"
-            f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
+            "You are a helpful assistant. Use the following document excerpts to answer the question.\n"
+            + ("Note: some context was retrieved via knowledge graph traversal.\n\n" if graph_used else "\n")
+            + f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
         )
         answer = groq_call_llm(prompt)
-        logging.info("LLM responded successfully")
+        logging.info("LLM responded successfully (graph_expanded=%s)", graph_used)
+
     except ValueError as e:
         logging.error("Config error: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 503
@@ -149,11 +181,23 @@ def query_doc():
         logging.error("Query error: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    return jsonify({"answer": answer, "citations": top_meta})
+    return jsonify({
+        "answer":    answer,
+        "citations": final_metas,
+        "graph_rag": graph_used,
+        "graph_stats": knowledge_graph.stats(),
+    })
+
+
+@app.route("/graph/stats", methods=["GET"])
+def graph_stats():
+    """Return knowledge graph statistics."""
+    return jsonify(knowledge_graph.stats())
 
 
 # ── Blueprint ──────────────────────────────────────────────────────────────────
-from backend.app.routes import bp as api_bp
+# Import using absolute path to avoid issues when started as a plain script
+from backend.app.routes import bp as api_bp   # noqa: E402
 app.register_blueprint(api_bp, url_prefix="/api")
 
 if __name__ == "__main__":

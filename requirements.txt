@@ -12,15 +12,18 @@ pymupdf==1.25.5
 pytesseract==0.3.13
 Pillow==11.2.1
 python-docx==1.2.0
-pdf2image==1.17.0
-
-# ── OCR engine (pure-Python, no Tesseract binary required) ─────────────
-easyocr
-numpy>=1.17
 
 # ── Semantic vector store ──────────────────────────────────────────────
 chromadb==1.0.9
 sentence-transformers==3.4.1
 
+# ── Graph RAG ─────────────────────────────────────────────────────────
+# spaCy: local NER for entity extraction (run: python -m spacy download en_core_web_sm)
+spacy>=3.7,<4.0
+networkx>=3.0
+
 # ── HTTP client (Groq API) ─────────────────────────────────────────────
 requests==2.32.3
+
+# ── Numerical ─────────────────────────────────────────────────────────
+numpy>=1.24

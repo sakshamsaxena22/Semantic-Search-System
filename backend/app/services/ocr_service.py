@@ -6,76 +6,84 @@ Extraction strategy per file type
 PDF   : Two-pass per page —
           1. PyMuPDF get_text()  → fast, perfect for text-layer PDFs
           2. If page has < 20 native chars (image-based / scanned),
-             render page to image → EasyOCR.
-        Image-only pages are processed IN PARALLEL for speed.
+             render page to image → PyTesseract OCR
 DOCX  : python-docx paragraph extraction
 TXT   : plain read
-Images: EasyOCR directly (JPG / PNG / BMP / TIFF)
+Images: PyTesseract directly (JPG / PNG / BMP / TIFF)
 
-EasyOCR is lazily initialised on first use.
+PyTesseract wraps the Tesseract-OCR binary. On Windows the binary is
+expected at C:\\Program Files\\Tesseract-OCR\\tesseract.exe (default
+installer location). Override by setting the TESSERACT_CMD env-var.
 """
 
 import io
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fitz          # PyMuPDF
-import numpy as np
+import pytesseract
 from docx import Document
 from PIL import Image
 
-# ── Lazy EasyOCR reader (initialised once, reused) ────────────────────────────
-_easyocr_reader = None
-
-
-def _get_reader():
-    global _easyocr_reader
-    if _easyocr_reader is None:
-        import easyocr
-        logging.info("Initialising EasyOCR reader…")
-        _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-        logging.info("EasyOCR reader ready.")
-    return _easyocr_reader
-
+# ── Tesseract binary path (Windows) ───────────────────────────────────────────
+_TESSERACT_DEFAULT_WIN = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+_tess_cmd = os.environ.get("TESSERACT_CMD", "")
+if not _tess_cmd and os.path.isfile(_TESSERACT_DEFAULT_WIN):
+    _tess_cmd = _TESSERACT_DEFAULT_WIN
+if _tess_cmd:
+    pytesseract.pytesseract.tesseract_cmd = _tess_cmd
+    logging.info("Tesseract binary: %s", _tess_cmd)
+else:
+    logging.warning(
+        "Tesseract binary not found at default path. "
+        "Set TESSERACT_CMD env-var or install Tesseract-OCR."
+    )
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
-_OCR_DPI       = 150    # lower = faster render; raise to 200 for tiny text
-_MIN_TEXT_CHARS = 20    # pages below this are treated as image-only
-_MAX_WORKERS   = 4      # parallel OCR threads for multi-page image PDFs
+_OCR_DPI        = 200   # DPI for PDF→image render; 200 gives good accuracy
+_MIN_TEXT_CHARS = 20    # pages with fewer chars are treated as image-only
+_TESS_CONFIG    = "--oem 3 --psm 3"   # LSTM engine + auto page-seg
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _ocr_image(pil_img: Image.Image) -> str:
-    """Run EasyOCR on a PIL image and return joined text."""
-    reader = _get_reader()
-    arr = np.array(pil_img.convert("RGB"))
-    results = reader.readtext(arr, detail=0, paragraph=True)
-    return "\n".join(results)
+    """Run PyTesseract on a PIL image and return extracted text."""
+    text = pytesseract.image_to_string(
+        pil_img.convert("RGB"),
+        config=_TESS_CONFIG,
+    )
+    return text.strip()
 
 
 def _render_and_ocr_page(page: fitz.Page, page_num: int) -> tuple[int, str]:
-    """Render a single PDF page and OCR it. Returns (page_num, text)."""
+    """Render a single PDF page to image and OCR it. Returns (page_num, text)."""
     zoom = _OCR_DPI / 72
     mat  = fitz.Matrix(zoom, zoom)
     pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
     img  = Image.open(io.BytesIO(pix.tobytes("png")))
-    text = _ocr_image(img).strip()
-    logging.info("Page %d: EasyOCR extracted %d chars", page_num, len(text))
+    text = _ocr_image(img)
+    logging.info("Page %d: Tesseract extracted %d chars", page_num, len(text))
     return page_num, text
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_text_from_file(file_path: str) -> str:
+    """
+    Extract plain text from file_path.
+    Supported: .pdf, .jpg, .jpeg, .png, .bmp, .tiff, .tif, .docx, .txt
+
+    Returns a single string with all extracted text, pages separated by
+    double newlines for PDF files.
+    """
     ext = os.path.splitext(file_path)[1].lower()
 
     # ── PDF ───────────────────────────────────────────────────────────────────
     if ext == ".pdf":
         doc = fitz.open(file_path)
         native_texts: dict[int, str] = {}
-        ocr_needed: list[tuple[int, fitz.Page]] = []
+        ocr_needed:   list[tuple[int, fitz.Page]] = []
 
         # Pass 1 — collect native text; identify image-only pages
         for page_num, page in enumerate(doc, start=1):
@@ -87,24 +95,20 @@ def extract_text_from_file(file_path: str) -> str:
                 ocr_needed.append((page_num, page))
                 logging.info("Page %d: no native text → queued for OCR", page_num)
 
-        # Pass 2 — OCR image pages in parallel
+        # Pass 2 — OCR image pages sequentially (Tesseract is thread-safe but
+        #          multiprocessing on Windows requires spawn which is slow)
         ocr_results: dict[int, str] = {}
         if ocr_needed:
-            logging.info("Running EasyOCR on %d page(s) in parallel…", len(ocr_needed))
-            with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(ocr_needed))) as pool:
-                futures = {
-                    pool.submit(_render_and_ocr_page, page, pnum): pnum
-                    for pnum, page in ocr_needed
-                }
-                for future in as_completed(futures):
-                    pnum, text = future.result()
-                    ocr_results[pnum] = text
+            logging.info("Running Tesseract OCR on %d page(s)…", len(ocr_needed))
+            for pnum, page in ocr_needed:
+                _, text = _render_and_ocr_page(page, pnum)
+                ocr_results[pnum] = text
 
         doc.close()
 
         # Merge in original page order
         total_pages = len(native_texts) + len(ocr_results)
-        all_texts = []
+        all_texts   = []
         for i in range(1, total_pages + 1):
             t = native_texts.get(i) or ocr_results.get(i, "")
             if t:
