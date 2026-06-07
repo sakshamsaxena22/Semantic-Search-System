@@ -181,3 +181,91 @@ To host the application reliably and continuously on Render.com utilizing Infras
 > * **Source Files**: `D:/SemanticSearchSystem/Dockerfile`, `D:/SemanticSearchSystem/render.yaml`
 > * **Relevant Commands**: `pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu`
 > * **Uncertainties**: Railway deployment viability (a legacy `railway.toml` exists but appears unused).
+
+---
+
+## 6. Project Root Structure
+
+### Repository Tree
+
+`	ext
+SemanticSearchSystem/
+├── .env
+├── .gitignore
+├── Dockerfile
+├── README.md
+├── pytest.ini
+├── railway.toml
+├── render.yaml
+├── requirements.txt
+├── backend/
+│   ├── __init__.py
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   ├── main.py
+│   │   ├── routes.py
+│   │   └── services/
+│   │       ├── __init__.py
+│   │       ├── graph_service.py
+│   │       ├── groq_client.py
+│   │       ├── ocr_service.py
+│   │       └── vector_service.py
+│   └── data/
+├── docs/
+│   └── final_documentation.md
+├── frontend/
+│   └── index.html
+└── tests/
+    └── test_app.py
+`
+
+### File Inventory Table
+
+| File Path | Purpose | Technology | Importance | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| ackend/app/main.py | Core Flask application, queue manager, API endpoints | Python/Flask | Critical | Main application entry point; handles asynchronous processing queues |
+| ackend/app/services/vector_service.py | Vector encoding and semantic search database connection | Python, SentenceTransformers, Pinecone/ChromaDB | Critical | Core retrieval-augmented generation (RAG) vector service |
+| ackend/app/services/graph_service.py | Hybrid Knowledge Graph extraction and query expansion | Python, NetworkX, spaCy | Critical | Graph RAG enhancement engine using entity relationships |
+| ackend/app/services/ocr_service.py | Text extraction from diverse document formats | Python, PyMuPDF, pytesseract, ElementTree | Critical | Ingests PDFs, DOCX, and images into raw text |
+| rontend/index.html | User interface for document upload and semantic search | HTML, CSS, Vanilla JS | Critical | Complete frontend bundle in a single file |
+| 
+equirements.txt | Python dependency lock file | pip | Critical | Lists all necessary libraries (Flask, PyTorch, etc) |
+| ackend/app/services/groq_client.py | LLM client for Groq API integration | Python, requests | Important | Used for generating final answers and graph relationships |
+| ackend/app/config.py | Environment variable and configuration loading | Python, dotenv | Important | Maps environment keys (e.g. Pinecone, Groq) |
+| Dockerfile | Containerization instructions | Docker | Important | Deploys the Python 3.11-slim server using Gunicorn |
+| 
+ender.yaml | Infrastructure as code for Render.com | YAML | Important | Primary deployment specification file |
+
+---
+
+## 7. Deep-Dive: File & Function Analysis
+
+### ackend/app/main.py
+The absolute entry point.
+* start_threads(): Triggered via @app.before_request. Instantiates the worker and watchdog threads in the active Gunicorn worker.
+* _queue_worker(): Infinite loop that pops files off the queue, calls _process_file(), and manages memory cleanup gc.collect().
+* _worker_watchdog(): Background daemon that monitors _worker_thread.is_alive() and respawns it if it dies.
+* upload_doc(): Route handler for POST /upload. Buffers the file, updates .jobs.json, and enqueues.
+* search_doc(): Route handler for POST /query. Calls vector store, graph store, deduplicates context, and queries Groq.
+* health_check(): Route handler for GET /health. Used for system monitoring.
+
+### ackend/app/services/ocr_service.py
+* extract_text_from_file(file_path): The single entry point. Switches on file extension to parse PDFs (itz), Images (pytesseract), or DOCX (parsing raw XML out of the zip archive to catch text boxes).
+
+### ackend/app/services/vector_service.py
+* VectorStore.__init__(): Lazy initializes credentials. Sets up Pinecone remote or ChromaDB local fallback.
+* VectorStore._get_model(): Lazy loads the ll-MiniLM-L6-v2 transformer model to save RAM.
+* VectorStore.add_document(doc_id, chunks): Embeds chunks in small batches (32) and upserts them.
+* VectorStore.query(query_text, top_k): Embeds the query and fetches the highest cosine similarity results.
+
+### ackend/app/services/graph_service.py
+* KnowledgeGraph.__init__(): Loads spaCy NER model and deserializes knowledge_graph.pkl into 
+etworkx.DiGraph.
+* KnowledgeGraph.add_document(doc_id, chunks): Iterates chunks. Uses NER to extract entities. Sends complex chunks to Groq for triple extraction (EntityA, Rel, EntityB). Updates the graph and saves to disk.
+* KnowledgeGraph.expand_query_context(query_text): Identifies entities in the user\'s query, finds them in the graph, and traverses 1-hop away to return related multi-hop context chunks.
+
+### ackend/app/services/groq_client.py
+* groq_call_llm(context, query): The central synthesis function. Feeds the combined vector/graph context to Llama-3/Mixtral to generate a natural language response.
+* groq_extract_relations(text): Highly specialized LLM prompt that forces the LLM to output pure JSON arrays of entity relationships for the graph.
+
